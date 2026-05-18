@@ -1,6 +1,6 @@
 # Immune System v4.1 — Hybrid Adaptive Memory for AI Agents
 
-[![Stars](https://img.shields.io/github/stars/contactjccoaching-wq/immune?style=social)](https://github.com/contactjccoaching-wq/immune)
+[![Stars](https://img.shields.io/github/stars/Mnemoclaw/immune?style=social)](https://github.com/Mnemoclaw/immune)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 A self-improving memory system that makes AI outputs better over time through two complementary memories:
