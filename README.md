@@ -21,15 +21,19 @@ A self-improving memory system that makes AI outputs better over time through tw
   --> Score (0-100, domain-normalized)
   --> Session log (for future context recall)
   --> Flush pending patterns (before context compaction)
+
+[Retrieval Pipeline]
+  FTS4 pre-filter → Bi-encoder embeddings → Cross-encoder rerank → Top-N results
 ```
 
 ## Key Features
 
-### Semantic Search (v4.1)
-- **Embeddings** — Local `Xenova/all-MiniLM-L6-v2` model (384 dims, ~22MB, runs in WASM)
-- **TF-IDF + Cosine Similarity** — Sparse vector fallback when embeddings unavailable
+### 3-Stage Retrieval (v4.1)
+1. **FTS4 Pre-filter** — SQLite full-text search narrows candidates
+2. **Bi-encoder Scoring** — `Xenova/all-MiniLM-L6-v2` (384 dims, ~22MB, WASM) computes query/item embeddings, ranks by cosine similarity
+3. **Cross-encoder Reranking** — `Xenova/ms-marco-MiniLM-L-6-v2` scores top candidates with query+item pairs for precision boost (alpha=0.7 blend with bi-encoder scores)
+- **TF-IDF Fallback** — Sparse vector similarity when embeddings unavailable
 - **Character Trigrams** — Jaccard similarity for fuzzy matching
-- **Hybrid Re-ranking** — `alpha * textual_similarity + (1-alpha) * heat_score`
 - **Auto-switch** — Full-scan for small corpus (<200), FTS4 pre-filter for large corpus
 
 ### Hot/Cold Tiering
@@ -86,6 +90,14 @@ node immune-adapter.js update-antibody --id AB-001 --increment_seen
 # Bulk
 node immune-adapter.js flush-pending --json '{"antibodies":[...],"strategies":[...]}'
 node immune-adapter.js import --file export.immune.json
+node immune-adapter.js get-all --query "docker security" --domains '["code"]'  # Combined antibodies+strategies
+
+# Conversations
+node immune-adapter.js scan-conversations     # Scan session logs for immune analysis
+node immune-adapter.js cleanup-conversations  # Prune old conversation archives
+
+# Visualization
+node immune-viz.js                            # Generate immune-viz.html dashboard
 
 # Maintenance
 node immune-adapter.js index              # Rebuild FTS4 index
@@ -119,8 +131,8 @@ Patterns are tagged with domains for targeted retrieval:
 ## Configuration
 
 All tunable parameters are in `config.yaml`:
-- Re-ranking alpha (textual vs heat balance)
-- Deduplication thresholds (embedding: 0.7, Jaccard: 0.55)
+- Cross-encoder alpha (0.7) and top-N candidates (20)
+- Bi-encoder deduplication thresholds (embedding: 0.7, Jaccard: 0.55)
 - Hot/Cold criteria
 - Housekeeping limits and archival rules
 - Domain keywords for auto-detection
