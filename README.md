@@ -36,6 +36,37 @@ Then in Claude Code, use `/immune` to scan any output:
 
 > **First run:** The embedding model (~22MB) downloads automatically. No API keys needed — everything runs locally via WASM.
 
+### Automatic Pre-Generation Injection (Optional)
+
+Inject relevant strategies automatically before every Claude response:
+
+```bash
+# Test the inject script manually
+echo '{"prompt":"Write a Node.js API endpoint"}' | node ~/.claude/skills/immune/immune-inject.js
+```
+
+Add to `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node /path/to/.claude/skills/immune/immune-inject.js",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+This detects the domain from your prompt (code, fitness, writing, etc.) and injects up to 5 HOT strategies as compact XML before Claude generates. Zero injection on unrelated prompts. ~50ms overhead.
+
 ## Architecture
 
 ```
