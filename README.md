@@ -8,6 +8,34 @@ A self-improving memory system that makes AI outputs better over time through tw
 - **Immune (antibodies)** — Detects and prevents known errors (negative patterns)
 - **Cheatsheet (strategies)** — Injects proven best practices before generation (positive patterns)
 
+## Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/Mnemoclaw/immune.git
+cd immune
+
+# 2. Install dependencies (Node.js 18+ required)
+npm install
+
+# 3. Copy to Claude Code skills directory
+mkdir -p ~/.claude/skills/immune
+cp -r * ~/.claude/skills/immune/
+
+# 4. Verify
+node ~/.claude/skills/immune/immune-adapter.js stats
+```
+
+Then in Claude Code, use `/immune` to scan any output:
+
+```
+/immune Check this function for common pitfalls
+/immune domain=fitness Vérifie ce programme
+/immune domains=fitness,code Check this workout API
+```
+
+> **First run:** The embedding model (~22MB) downloads automatically. No API keys needed — everything runs locally via WASM.
+
 ## Architecture
 
 ```
