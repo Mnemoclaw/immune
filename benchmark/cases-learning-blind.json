@@ -1,0 +1,181 @@
+[
+  {
+    "id": "BLRN-001",
+    "domain": "code",
+    "input": "app.post('/api/users/:id', async (req, res) => {\n  const userId = req.params.id;\n  const query = `SELECT * FROM users WHERE id = ${userId}`;\n  const result = await db.query(query);\n  if (!result.rows.length) {\n    return res.status(404).json({ error: 'User not found' });\n  }\n  res.json(result.rows[0]);\n});",
+    "errors": [
+      {
+        "pattern": "SQL injection via string interpolation of user-controlled path parameter directly into query",
+        "severity": "critical",
+        "correction": "Use parameterized queries: db.query('SELECT * FROM users WHERE id = $1', [userId])"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-002",
+    "domain": "code",
+    "input": "router.get('/search', async (req, res) => {\n  const results = await Product.find({\n    $or: [\n      { name: { $regex: req.query.q, $options: 'i' } },\n      { sku: req.query.q }\n    ]\n  }).sort(req.query.sort);\n  res.json(results);\n});",
+    "errors": [
+      {
+        "pattern": "NoSQL injection: req.query.q is passed directly to $regex, allowing DoS via catastrophic backtracking (e.g., repeating '(a+)+')",
+        "severity": "critical",
+        "correction": "Escape regex metacharacters or use $text index with $search instead of raw $regex"
+      },
+      {
+        "pattern": "req.query.sort is passed unsanitized to .sort(), allowing an attacker to manipulate sort to leak data or cause errors",
+        "severity": "warning",
+        "correction": "Whitelist allowed sort fields against a predefined map before passing to .sort()"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-003",
+    "domain": "code",
+    "input": "const jwt = require('jsonwebtoken');\nconst fs = require('fs');\n\nfunction generateToken(user) {\n  const payload = { id: user.id, role: user.role };\n  const privateKey = fs.readFileSync('./keys/private.pem');\n  return jwt.sign(payload, privateKey, { algorithm: 'RS256' });\n}",
+    "errors": [
+      {
+        "pattern": "Token has no expiration (no expiresIn option), meaning tokens are valid forever — compromised tokens cannot be naturally invalidated",
+        "severity": "warning",
+        "correction": "Add expiresIn option: jwt.sign(payload, privateKey, { algorithm: 'RS256', expiresIn: '1h' })"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-004",
+    "domain": "code",
+    "input": "app.post('/upload', upload.single('file'), (req, res) => {\n  if (!req.file) return res.status(400).json({ error: 'No file' });\n  const dest = path.join(__dirname, 'uploads', req.file.originalname);\n  fs.renameSync(req.file.path, dest);\n  res.json({ path: `/uploads/${req.file.originalname}` });\n});",
+    "errors": [
+      {
+        "pattern": "Path traversal: req.file.originalname can contain '../' allowing the uploaded file to be written outside the uploads directory",
+        "severity": "critical",
+        "correction": "Sanitize filename with path.basename(req.file.originalname) or generate a random filename server-side"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-005",
+    "domain": "code",
+    "input": "def get_user_posts(user_id):\n    cache_key = f'user_posts:{user_id}'\n    cached = redis_client.get(cache_key)\n    if cached:\n        return json.loads(cached)\n    posts = db.execute(\n        f\"SELECT title, body FROM posts WHERE author_id = {user_id}\"\n    ).fetchall()\n    redis_client.setex(cache_key, 3600, json.dumps(posts))\n    return posts",
+    "errors": [
+      {
+        "pattern": "SQL injection via f-string interpolation of user_id into the query — even though it may look like an integer, there is no validation",
+        "severity": "critical",
+        "correction": "Use parameterized query: db.execute('SELECT title, body FROM posts WHERE author_id = %s', (user_id,))"
+      },
+      {
+        "pattern": "Cached data never invalidated — stale posts shown for up to 1 hour after updates or deletion",
+        "severity": "warning",
+        "correction": "Invalidate cache on post creation/update/deletion, or use cache stampede pattern with shorter TTL"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-006",
+    "domain": "code",
+    "input": "class ReportGenerator:\n    def __init__(self, config):\n        self.output_dir = config['output_dir']\n        self.template = config.get('template', 'default.html')\n\n    def generate(self, report_name, data):\n        os.system(f'wkhtmltopdf --title \"{report_name}\" '\n                  f'{self.template} {self.output_dir}/{report_name}.pdf')\n        return f'{self.output_dir}/{report_name}.pdf'",
+    "errors": [
+      {
+        "pattern": "Command injection via os.system with unsanitized report_name — an attacker controlling report_name can execute arbitrary shell commands by injecting shell metacharacters",
+        "severity": "critical",
+        "correction": "Use subprocess.run with a list of arguments instead of shell string: subprocess.run(['wkhtmltopdf', '--title', report_name, self.template, output_path])"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-007",
+    "domain": "code",
+    "input": "def process_payment(order_id, amount, card_token):\n    try:\n        charge = stripe.Charge.create(\n            amount=int(amount * 100),\n            currency='eur',\n            source=card_token,\n            metadata={'order_id': order_id}\n        )\n        order = Order.get(order_id)\n        order.status = 'paid'\n        order.stripe_charge_id = charge.id\n        order.save()\n        notify_customer(order)\n    except Exception:\n        pass",
+    "errors": [
+      {
+        "pattern": "Bare except with pass swallows all exceptions silently — payment failures, network errors, and bugs are completely hidden with no logging or monitoring",
+        "severity": "critical",
+        "correction": "Catch specific exceptions (stripe.error.StripeError, etc.), log the error, and either re-raise or return a proper error response"
+      },
+      {
+        "pattern": "Floating point precision error: int(amount * 100) can produce wrong cent amounts (e.g., int(19.99 * 100) = 1998 due to float representation)",
+        "severity": "warning",
+        "correction": "Use Decimal for monetary calculations or round to nearest cent: round(amount * 100)"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-008",
+    "domain": "code",
+    "input": "FROM node:18\n\nWORKDIR /app\nCOPY . .\nRUN npm install --production\n\nEXPOSE 3000\nCMD [\"node\", \"server.js\"]",
+    "errors": [
+      {
+        "pattern": "Running as root inside the container — if the app is compromised, the attacker has root privileges in the container",
+        "severity": "warning",
+        "correction": "Add a non-root user: RUN useradd -m appuser && chown -R appuser /app then USER appuser before CMD"
+      },
+      {
+        "pattern": "COPY . . copies everything including .env, .git, node_modules, secrets — no .dockerignore filtering and potentially leaks sensitive files into the image",
+        "severity": "warning",
+        "correction": "Use a .dockerignore file and COPY package.json package-lock.json first, then npm install, then COPY the source code for better layer caching"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-009",
+    "domain": "code",
+    "input": "#!/bin/bash\nset -e\n\nDB_PASS=$(grep DB_PASS /etc/app/config.env | cut -d= -f2)\nBACKUP_FILE=\"db_backup_$(date +%Y%m%d).sql.gz\"\n\necho \"Starting backup with password: $DB_PASS\"\n\nmysqldump -u backup_user -p\"$DB_PASS\" production_db | gzip > \"/backups/$BACKUP_FILE\"\n\nfind /backups -name '*.sql.gz' -mtime +30 -delete\n\necho \"Backup completed: $BACKUP_FILE\"",
+    "errors": [
+      {
+        "pattern": "Database password echoed to stdout/logs — the echo statement logs the plaintext password which may end up in log aggregation systems, CI outputs, or terminal history",
+        "severity": "critical",
+        "correction": "Remove the echo line that prints the password, or redact it in logs"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-010",
+    "domain": "code",
+    "input": "#!/bin/bash\n\ncleanup() {\n  echo \"Cleaning up temporary files...\"\n  rm -rf $TEMP_DIR\n}\n\nTEMP_DIR=\"/tmp/build_$$_${1}\"\nmkdir -p \"$TEMP_DIR\"\n\ntrap cleanup EXIT\n\n# Build process\n./compile.sh --output=\"$TEMP_DIR/out.bin\" 2>/dev/null\n\nif [ $? -ne 0 ]; then\n  echo \"Build failed\"\n  exit 1\nfi\n\ncp \"$TEMP_DIR/out.bin\" /opt/release/latest.bin",
+    "errors": [
+      {
+        "pattern": "rm -rf $TEMP_DIR is unquoted — if TEMP_DIR is empty (e.g., due to earlier failure), this becomes 'rm -rf /' or 'rm -rf' with unpredictable behavior; also $1 is unsanitized input",
+        "severity": "critical",
+        "correction": "Always quote variables in rm: rm -rf \"$TEMP_DIR\", and validate TEMP_DIR is non-empty before deletion"
+      },
+      {
+        "pattern": "exit code check with $? after 2>/dev/null redirection — the if [ $? -ne 0 ] only works because it's on the next line, but this is fragile; the more robust pattern is if ! ./compile.sh ...",
+        "severity": "warning",
+        "correction": "Use direct condition: if ! ./compile.sh --output=\"$TEMP_DIR/out.bin\" 2>/dev/null; then ..."
+      }
+    ]
+  },
+  {
+    "id": "BLRN-011",
+    "domain": "code",
+    "input": "async function getUserData(req: Request, res: Response): Promise<void> {\n  const token = req.headers.authorization?.split(' ')[1];\n  const decoded = jwt.verify(token!, process.env.JWT_SECRET!) as JwtPayload;\n  const user = await UserModel.findById(decoded.userId);\n  if (!user) {\n    res.status(404).json({ error: 'User not found' });\n  }\n  res.json({ email: user.email, role: user.role, ssn: user.ssn });\n}",
+    "errors": [
+      {
+        "pattern": "Missing return after 404 response — if user is null, the code sends a 404 JSON response but then continues to execute res.json() on the next line, causing 'Cannot set headers after they are sent' error and potentially leaking a crash",
+        "severity": "warning",
+        "correction": "Add return after res.status(404).json(...) to prevent fall-through"
+      },
+      {
+        "pattern": "SSN (Social Security Number) returned in API response — sensitive PII exposed without access control or justification",
+        "severity": "critical",
+        "correction": "Remove SSN from the response payload; if needed, restrict to admin-only endpoints with audit logging"
+      }
+    ]
+  },
+  {
+    "id": "BLRN-012",
+    "domain": "code",
+    "input": "export class UserService {\n  private cache = new Map<string, User>();\n\n  async getUser(id: string): Promise<User> {\n    if (this.cache.has(id)) {\n      return this.cache.get(id)!;\n    }\n    const user = await this.db.users.findById(id);\n    this.cache.set(id, user);\n    return user;\n  }\n\n  async updateUser(id: string, data: Partial<User>): Promise<User> {\n    await this.db.users.update(id, data);\n    return this.getUser(id);\n  }\n}",
+    "errors": [
+      {
+        "pattern": "Stale cache on update — updateUser modifies the database but the cache entry still holds the old user data; subsequent getUser calls return stale data indefinitely",
+        "severity": "warning",
+        "correction": "Invalidate cache on update: this.cache.delete(id) after the database update in updateUser"
+      },
+      {
+        "pattern": "Unbounded Map cache with no eviction — entries are added but never removed, causing a memory leak over time as the set of users grows",
+        "severity": "warning",
+        "correction": "Use an LRU cache with a size limit (e.g., lru-cache package) or implement TTL-based expiration"
+      }
+    ]
+  }
+]
