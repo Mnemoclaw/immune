@@ -58,7 +58,7 @@ cheatsheet:
 domain_keywords:
   code: ["function", "class", "import", "const", "let", "var", "def", "return", "async", "await", "SQL", "API", "endpoint", "worker", "fetch", "query"]
   fitness: ["séries", "reps", "exercice", "muscle", "squat", "curl", "programme", "entraînement", "sets", "workout", "deload", "hypertrophie"]
-  writing: ["paragraphe", "article", "rédaction", "contenu", "SEO", "paragraph", "content", "blog"]
+  writing: ["paragraphe", "article", "rédaction", "contenu", "SEO", "paragraph", "content", "blog", "D1", "traduction", "FAQ", "musculation blog", "slug"]
   research: ["source", "étude", "analyse", "hypothèse", "study", "analysis", "findings"]
   strategy: ["marché", "compétiteur", "ROI", "market", "competitor", "revenue", "pivot"]
   webdesign: ["CSS", "HTML", "responsive", "CTA", "landing page", "UI", "UX", "layout"]
@@ -96,7 +96,7 @@ context_memory:
   retention_hot_days: 90
   archive_dir: "context/archive"
   index_memory_md: true
-  memory_md_path: "MEMORY.md"  # override with your own path
+  memory_md_path: "../../projects/C--Users-kiki/memory/MEMORY.md"
   user_md_path: "USER.md"
 
 scoring:

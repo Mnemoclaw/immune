@@ -3,15 +3,19 @@
 
 // immune-inject.js — Pre-generation strategy injection hook
 // Called by Claude Code UserPromptSubmit hook before every prompt.
-// Reads prompt → detects domains → loads HOT strategies → outputs compact XML.
-// Zero external deps. Silent on any error (graceful degradation).
+// Primary: embed daemon (suggest-domains → immune-get-all)
+// Fallback: local keyword detection + file-based strategies
+// Silent on any error (graceful degradation).
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 
 const DIR = __dirname;
 const CONFIG_PATH = path.join(DIR, 'config.yaml');
 const CHEATSHEET_PATH = path.join(DIR, 'cheatsheet_memory.json');
+const EMBED_PORT = 8091;
+const EMBED_HOST = '127.0.0.1';
 
 const MAX_STRATEGIES = 5;
 
@@ -31,6 +35,26 @@ function isHotStrategy(cs) {
   return false;
 }
 
+// ── HTTP helper ──────────────────────────────────────────
+
+function httpPost(pth, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = http.request(
+      { hostname: EMBED_HOST, port: EMBED_PORT, path: pth, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
+      (res) => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse')); } });
+      }
+    );
+    req.on('error', reject);
+    req.setTimeout(timeoutMs || 3000, () => { req.destroy(); reject(new Error('timeout')); });
+    req.end(payload);
+  });
+}
+
 // ── Config parsing (lightweight, no yaml lib) ────────────
 
 function parseDomainKeywords(configPath) {
@@ -46,7 +70,7 @@ function parseDomainKeywords(configPath) {
           keywords[m[1]] = m[2].split(',').map(k => k.trim().replace(/"/g, '').replace(/'/g, '')).filter(Boolean);
         }
       } else if (inSection && /^\S/.test(line)) {
-        break; // next section
+        break;
       }
     }
     return keywords;
@@ -55,7 +79,7 @@ function parseDomainKeywords(configPath) {
   }
 }
 
-// ── Domain detection ─────────────────────────────────────
+// ── Domain detection (fallback) ──────────────────────────
 
 function detectDomains(prompt, domainKeywords) {
   const lower = (' ' + prompt.toLowerCase() + ' ');
@@ -65,7 +89,6 @@ function detectDomains(prompt, domainKeywords) {
     if (domain === '_global') continue;
     let hits = 0;
     for (const kw of keywords) {
-      // Word boundary check — prevent "France" matching "API"
       const pattern = '\\b' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b';
       if (new RegExp(pattern, 'i').test(lower)) hits++;
     }
@@ -84,8 +107,6 @@ function detectDomains(prompt, domainKeywords) {
     domains.push(sorted[0][0]);
   }
 
-  // Only include _global if a specific domain was detected
-  // (avoids noise on unrelated prompts like "What is the capital of France?")
   if (domains.length > 0) {
     domains.push('_global');
   }
@@ -93,7 +114,7 @@ function detectDomains(prompt, domainKeywords) {
   return [...new Set(domains)];
 }
 
-// ── Strategy loading ─────────────────────────────────────
+// ── Strategy loading (fallback, file-based) ──────────────
 
 function loadHotStrategies(jsonPath, domains) {
   try {
@@ -129,16 +150,15 @@ function formatCompact(strategies) {
 
 // ── Main ─────────────────────────────────────────────────
 
-try {
-  // Read stdin (hook passes JSON with prompt field)
+(async () => { try {
   let input = '';
 
-  if (process.stdin.isTTY) {
-    // No piped input — nothing to do
+  // Read stdin — on Windows/Git Bash, isTTY can be unreliable with pipes
+  try {
+    input = fs.readFileSync(0, 'utf8').trim();
+  } catch {
     process.exit(0);
   }
-
-  input = fs.readFileSync(0, 'utf8').trim(); // fd 0 = stdin, works on Windows
 
   if (!input) process.exit(0);
 
@@ -147,7 +167,6 @@ try {
     const parsed = JSON.parse(input);
     promptText = parsed.prompt || parsed.message || '';
   } catch {
-    // Not JSON — treat raw text as prompt
     promptText = input;
   }
 
@@ -157,14 +176,31 @@ try {
   try {
     const { sanitize } = require('./sanitizer');
     promptText = sanitize(promptText);
-  } catch { /* no sanitizer, continue raw */ }
+  } catch {}
 
-  // Detect domains
-  const domainKeywords = parseDomainKeywords(CONFIG_PATH);
-  const domains = detectDomains(promptText, domainKeywords);
+  // Primary: embed daemon pipeline (suggest-domains → immune-get-all)
+  let strategies = [];
+  try {
+    const domainResult = await httpPost('/suggest-domains', { query: promptText, top_k: 8 });
+    const domains = (domainResult && Array.isArray(domainResult.domains) && domainResult.domains.length > 0)
+      ? domainResult.domains : ['_global'];
 
-  // Load strategies
-  const strategies = loadHotStrategies(CHEATSHEET_PATH, domains);
+    const immuneResult = await httpPost('/immune-get-all', {
+      query: promptText,
+      domains: domains,
+      tier: 'hot',
+      limit: MAX_STRATEGIES,
+    }, 8000);
+
+    if (immuneResult && immuneResult.strategies && Array.isArray(immuneResult.strategies.strategies)) {
+      strategies = immuneResult.strategies.strategies.slice(0, MAX_STRATEGIES);
+    }
+  } catch {
+    // Fallback: local keyword detection + file-based strategies
+    const domainKeywords = parseDomainKeywords(CONFIG_PATH);
+    const domains = detectDomains(promptText, domainKeywords);
+    strategies = loadHotStrategies(CHEATSHEET_PATH, domains);
+  }
 
   // Output
   const output = formatCompact(strategies);
@@ -172,8 +208,5 @@ try {
     process.stdout.write(output + '\n');
   }
 } catch (err) {
-  // Silent degradation — never break Claude's flow
   if (process.env.IMMUNE_DEBUG) process.stderr.write('immune-inject: ' + err.message + '\n');
-}
-
-process.exit(0);
+} })();

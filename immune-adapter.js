@@ -3,9 +3,58 @@
 
 const fs = require('fs');
 const path = require('path');
+const http = require('http');
 const lockfile = require('proper-lockfile');
 
 const { sanitize } = require('./sanitizer');
+
+// ── Embed Daemon Client ──────────────────────────────────
+// Primary search/dedup via embed daemon (port 8091), fallback to local FTS4/Jaccard.
+
+const EMBED_DAEMON_HOST = '127.0.0.1';
+const EMBED_DAEMON_PORT = 8091;
+let _daemonAvailable = null; // null = not checked, true/false = result
+
+function daemonPost(pth, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = http.request(
+      { hostname: EMBED_DAEMON_HOST, port: EMBED_DAEMON_PORT, path: pth, method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
+      (res) => {
+        let d = '';
+        res.on('data', c => d += c);
+        res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse')); } });
+      }
+    );
+    req.on('error', reject);
+    req.setTimeout(timeoutMs || 5000, () => { req.destroy(); reject(new Error('timeout')); });
+    req.end(payload);
+  });
+}
+
+async function isDaemonAvailable() {
+  if (_daemonAvailable !== null) return _daemonAvailable;
+  try {
+    const result = await new Promise((resolve, reject) => {
+      const req = http.request(
+        { hostname: EMBED_DAEMON_HOST, port: EMBED_DAEMON_PORT, path: '/health', method: 'GET' },
+        (res) => {
+          let d = '';
+          res.on('data', c => d += c);
+          res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse')); } });
+        }
+      );
+      req.on('error', reject);
+      req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
+      req.end();
+    });
+    _daemonAvailable = result && result.ok === true;
+  } catch {
+    _daemonAvailable = false;
+  }
+  return _daemonAvailable;
+}
 
 const IMMUNE_DIR = __dirname;
 const DB_PATH = path.join(IMMUNE_DIR, 'immune.sqlite');
@@ -14,8 +63,7 @@ const JSON_CS = path.join(IMMUNE_DIR, 'cheatsheet_memory.json');
 const MIGRATION_FILE = path.join(IMMUNE_DIR, 'migration_state.json');
 const CONTEXT_DIR = path.join(IMMUNE_DIR, 'context');
 const ARCHIVE_DIR = path.join(CONTEXT_DIR, 'archive');
-const CONVERSATIONS_DIR = path.join(IMMUNE_DIR, 'conversations');
-const MEMORY_MD = path.join(IMMUNE_DIR, '..', 'MEMORY.md'); // override via MEMORY_MD env var
+const MEMORY_MD = path.join(IMMUNE_DIR, '..', '..', 'projects', 'C--Users-kiki', 'memory', 'MEMORY.md');
 const USER_MD = path.join(IMMUNE_DIR, 'USER.md');
 const ARCHIVE_AB = path.join(IMMUNE_DIR, 'archived_antibodies.json');
 const ARCHIVE_CS = path.join(IMMUNE_DIR, 'archived_strategies.json');
@@ -95,16 +143,11 @@ function daysDiffAdjusted(dateStr) {
 
 // ── TF-IDF Re-Ranking Engine ───────────────────────────
 // Auto-switches: full-scan if < RERANK_THRESHOLD items, FTS4 pre-filter + re-rank if >=
-// Stage 3: cross-encoder re-ranking on top candidates
 
 const RERANK_THRESHOLD = 200;       // switch from full-scan to FTS4+rerank
 const RERANK_ALPHA = 0.6;           // weight: textual similarity vs heat
 const RERANK_MIN_SCORE = 0.08;      // minimum composite score to include
 const RERANK_FTS_CANDIDATES = 100;  // max candidates from FTS4 pre-filter
-const CROSS_ENCODER_TOP = 20;       // how many candidates go to cross-encoder
-const CROSS_ENCODER_ALPHA = 0.7;    // weight: cross-encoder score vs bi-encoder+heat
-
-let _crossEncoder = null; // lazy-loaded reranker
 
 let _dfTable = null;
 let _dfCorpusSize = 0;
@@ -165,9 +208,7 @@ function heatScore(item) {
 async function rerankItems(items, query, domains, limit, type) {
   if (!query || items.length === 0) return items;
 
-  const itemTexts = items.map(i => i.pattern + ' ' + (i.correction || i.example || ''));
-
-  // Try embeddings (bi-encoder) for semantic scoring
+  // Try embeddings first (universal semantic), fallback to TF-IDF + trigrams
   await ensureTransformersInstalled();
   let queryEmbedding = null;
 
@@ -175,62 +216,7 @@ async function rerankItems(items, query, domains, limit, type) {
     queryEmbedding = await embedText(query);
   }
 
-  // Score candidates
-  let scored;
-
-  if (queryEmbedding) {
-    // Embeddings available: bi-encoder scoring
-    process.stderr.write('[IMMUNE] Using embeddings (bi-encoder)\n');
-    const itemEmbeddings = [];
-    for (const text of itemTexts) {
-      itemEmbeddings.push(await embedText(text));
-    }
-
-    scored = [];
-    for (let idx = 0; idx < items.length; idx++) {
-      const item = items[idx];
-      let textSim = 0;
-      if (queryEmbedding && itemEmbeddings[idx]) {
-        textSim = Math.max(0, cosineSimilarity(queryEmbedding, itemEmbeddings[idx]));
-      }
-      const heat = heatScore(item);
-      const composite = RERANK_ALPHA * textSim + (1 - RERANK_ALPHA) * heat;
-      scored.push({ ...item, _score: { composite, textSim, heat, engine: 'embedding' } });
-    }
-    scored.sort((a, b) => b._score.composite - a._score.composite);
-
-    // Cross-encoder re-ranking on top candidates (stage 3)
-    let finalScored = scored;
-    try {
-      const ceCandidates = scored.slice(0, CROSS_ENCODER_TOP);
-      const ceResults = await crossEncoderRerank(query, ceCandidates);
-      if (ceResults && ceResults.length > 0) {
-        const ceScored = [];
-        const ceMap = new Map(ceResults.map(r => [r.index, r]));
-        for (let i = 0; i < ceCandidates.length; i++) {
-          const ce = ceMap.get(i);
-          if (ce) {
-            const finalComposite = CROSS_ENCODER_ALPHA * ce.score + (1 - CROSS_ENCODER_ALPHA) * ceCandidates[i]._score.composite;
-            ceScored.push({ ...ceCandidates[i], _score: { ...ceCandidates[i]._score, composite: finalComposite, ceScore: ce.score, engine: 'cross-encoder' } });
-          } else {
-            ceScored.push(ceCandidates[i]);
-          }
-        }
-        const ceIds = new Set(ceScored.map(i => i.id));
-        const remaining = scored.filter(i => !ceIds.has(i.id));
-        finalScored = [...ceScored, ...remaining];
-      }
-    } catch (e) {
-      process.stderr.write(`[IMMUNE] Cross-encoder unavailable: ${e.message}\n`);
-    }
-
-    finalScored.sort((a, b) => b._score.composite - a._score.composite);
-    return finalizeResults(finalScored, limit);
-  }
-
-  // Fallback: TF-IDF + trigrams (no model loading needed)
-  process.stderr.write('[IMMUNE] Embeddings unavailable, using TF-IDF fallback\n');
-
+  // Ensure TF-IDF DF table is built (used as fallback or secondary signal)
   if (_dfDirty || !_dfTable) {
     const allItems = type === 'antibody'
       ? loadAntibodies().antibodies
@@ -241,27 +227,50 @@ async function rerankItems(items, query, domains, limit, type) {
   const queryVec = tfidfVector(query, _dfTable, _dfCorpusSize);
   const queryTrigrams = charTrigrams(query);
 
-  scored = [];
-  for (let idx = 0; idx < items.length; idx++) {
-    const item = items[idx];
-    const itemText = itemTexts[idx];
-    const tfidfSim = cosineSparse(queryVec, tfidfVector(itemText, _dfTable, _dfCorpusSize));
-    const trigramSim = jaccardTrigrams(queryTrigrams, charTrigrams(itemText));
-    const textSim = 0.7 * tfidfSim + 0.3 * trigramSim;
+  // Score each candidate
+  const scored = [];
+  for (const item of items) {
+    const itemText = item.pattern + ' ' + (item.correction || item.example || '');
+    let textSim;
+    let engine;
+
+    if (queryEmbedding) {
+      // Embeddings available: use as primary similarity
+      const itemEmbedding = await embedText(itemText);
+      if (itemEmbedding) {
+        const embSim = cosineSimilarity(queryEmbedding, itemEmbedding);
+        // Normalize: MiniLM cosine is typically 0-1, but can be negative
+        textSim = Math.max(0, embSim);
+        engine = 'embedding';
+      } else {
+        // Fallback for this item
+        const tfidfSim = cosineSparse(queryVec, tfidfVector(itemText, _dfTable, _dfCorpusSize));
+        const trigramSim = jaccardTrigrams(queryTrigrams, charTrigrams(itemText));
+        textSim = 0.7 * tfidfSim + 0.3 * trigramSim;
+        engine = 'tfidf+trigrams';
+      }
+    } else {
+      // No embeddings: TF-IDF + trigrams
+      const tfidfSim = cosineSparse(queryVec, tfidfVector(itemText, _dfTable, _dfCorpusSize));
+      const trigramSim = jaccardTrigrams(queryTrigrams, charTrigrams(itemText));
+      textSim = 0.7 * tfidfSim + 0.3 * trigramSim;
+      engine = 'tfidf+trigrams';
+    }
+
     const heat = heatScore(item);
     const composite = RERANK_ALPHA * textSim + (1 - RERANK_ALPHA) * heat;
-    scored.push({ ...item, _score: { composite, textSim, heat, engine: 'tfidf+trigrams' } });
+    scored.push({ ...item, _score: { composite, textSim, heat, engine } });
   }
 
+  // Sort ALL by composite score (criticals and non-criticals alike)
   scored.sort((a, b) => b._score.composite - a._score.composite);
-  return finalizeResults(scored, limit);
-}
 
-function finalizeResults(finalScored, limit) {
-  const aboveThreshold = finalScored.filter(i =>
+  // Apply minimum score threshold on non-criticals only
+  const aboveThreshold = scored.filter(i =>
     i._score.composite >= RERANK_MIN_SCORE || i.severity === 'critical'
   );
 
+  // Take top results, but guarantee at least the top 3 criticals make it
   const topCriticals = aboveThreshold.filter(i => i.severity === 'critical').slice(0, 3);
   const topCriticalIds = new Set(topCriticals.map(c => c.id));
   const others = aboveThreshold.filter(i => !topCriticalIds.has(i.id)).slice(0, limit - topCriticals.length);
@@ -269,46 +278,13 @@ function finalizeResults(finalScored, limit) {
     .sort((a, b) => b._score.composite - a._score.composite)
     .slice(0, limit);
 
+  // Diagnostic
   if (result.length > 0 && result[0]._score.composite < 0.1) {
     result._retrieval_warning = `Low relevance: best score ${result[0]._score.composite.toFixed(3)}`;
   }
-  result._engine = finalScored.length > 0 && finalScored[0]._score.engine === 'cross-encoder' ? 'cross-encoder' : (finalScored[0]?._score.engine || 'none');
+  result._engine = scored.length > 0 ? scored[0]._score.engine : 'none';
 
   return result;
-}
-
-// Cross-encoder re-ranking using Xenova (local, no daemon)
-async function crossEncoderRerank(query, candidates) {
-  if (!_crossEncoder) {
-    try {
-      const { pipeline } = await import('@xenova/transformers');
-      process.stderr.write('[IMMUNE] Loading cross-encoder model (first time may download)...\n');
-      _crossEncoder = await pipeline('text-classification', 'Xenova/ms-marco-MiniLM-L-6-v2',
-        { quantized: true });
-      process.stderr.write('[IMMUNE] Cross-encoder model ready.\n');
-    } catch (e) {
-      process.stderr.write(`[IMMUNE] Cross-encoder load failed: ${e.message}\n`);
-      return null;
-    }
-  }
-
-  const results = [];
-  for (let i = 0; i < candidates.length; i++) {
-    const item = candidates[i];
-    const itemText = item.pattern + ' ' + (item.correction || item.example || '');
-    try {
-      const output = await _crossEncoder([query, itemText]);
-      // ms-marco returns a label and score; extract relevance score
-      const score = output[0]?.score || 0;
-      // If label is 'contradiction' or similar, negate
-      const label = output[0]?.label || '';
-      const normalizedScore = (label === 'LABEL_0' || label === 'contradiction') ? -score : score;
-      results.push({ index: i, score: Math.max(0, normalizedScore) });
-    } catch {
-      results.push({ index: i, score: 0 });
-    }
-  }
-  return results;
 }
 
 async function getFTSCandidates(query, domains, type, limit) {
@@ -564,63 +540,6 @@ async function cmdGetStrategies(args) {
   return result;
 }
 
-// Combined command: returns both antibodies and strategies in one call
-async function cmdGetAll(args) {
-  const domains = JSON.parse(args.domains || '["_global"]');
-  const tier = args.tier || 'hot';
-  const limit = parseInt(args.limit) || 15;
-  const query = args.query || null;
-
-  const abData = loadAntibodies();
-  const csData = loadStrategies();
-
-  let abFiltered = abData.antibodies.filter(ab => domainMatch(ab.domains, domains));
-  let csFiltered = csData.strategies.filter(cs => domainMatch(cs.domains, domains));
-
-  if (tier === 'hot') {
-    abFiltered = abFiltered.filter(isHotAntibody);
-    csFiltered = csFiltered.filter(isHotStrategy);
-  } else if (tier === 'cold') {
-    abFiltered = abFiltered.filter(ab => !isHotAntibody(ab));
-    csFiltered = csFiltered.filter(cs => !isHotStrategy(cs));
-  }
-
-  if (query && tier !== 'cold') {
-    let abCandidates = abFiltered;
-    if (abData.antibodies.length >= RERANK_THRESHOLD) {
-      const ftsIds = await getFTSCandidates(query, domains, 'antibody', RERANK_FTS_CANDIDATES);
-      abCandidates = abFiltered.filter(ab => ftsIds.has(ab.id) || ab.severity === 'critical');
-    }
-
-    let csCandidates = csFiltered;
-    if (csData.strategies.length >= RERANK_THRESHOLD) {
-      const ftsIds = await getFTSCandidates(query, domains, 'strategy', RERANK_FTS_CANDIDATES);
-      csCandidates = csFiltered.filter(cs => ftsIds.has(cs.id));
-    }
-
-    abFiltered = await rerankItems(abCandidates, query, domains, limit, 'antibody');
-    csFiltered = await rerankItems(csCandidates, query, domains, limit, 'strategy');
-  } else {
-    if (tier === 'hot') {
-      abFiltered.sort((a, b) => {
-        const sev = { critical: 3, warning: 2, info: 1 };
-        const sa = sev[a.severity] || 0, sb = sev[b.severity] || 0;
-        if (sa !== sb) return sb - sa;
-        return (b.seen_count || 0) - (a.seen_count || 0);
-      });
-      abFiltered = abFiltered.slice(0, limit);
-
-      csFiltered.sort((a, b) => (b.effectiveness || 0) - (a.effectiveness || 0));
-      csFiltered = csFiltered.slice(0, limit);
-    }
-  }
-
-  return {
-    antibodies: { count: abFiltered.length, antibodies: abFiltered, reranked: !!(query && tier !== 'cold') },
-    strategies: { count: csFiltered.length, strategies: csFiltered, reranked: !!(query && tier !== 'cold') },
-  };
-}
-
 async function cmdAddAntibody(args) {
   const ab = JSON.parse(args.json);
   if (!ab.id || !ab.pattern || !ab.severity || !ab.correction) {
@@ -766,11 +685,34 @@ async function cmdSearch(args) {
   const type = args.type || 'all';
   const limit = parseInt(args.limit) || 10;
 
+  // Primary: embed daemon semantic search
+  if (await isDaemonAvailable()) {
+    try {
+      const searchType = type === 'antibodies' ? 'antibody'
+        : type === 'strategies' ? 'strategy'
+        : type;
+      const result = await daemonPost('/search', {
+        query, type: searchType, limit,
+      }, 10000);
+      if (result && result.results) {
+        return {
+          count: result.count,
+          results: result.results.map(r => ({
+            source_type: r.type,
+            source_id: r.id,
+            snippet: r.snippet || r.pattern || '',
+            score: r.score,
+          })),
+          engine: 'embedding',
+        };
+      }
+    } catch {}
+  }
+
+  // Fallback: FTS4 search
   const db = await getDB();
-  // Check if FTS has data
   const countRes = db.exec(`SELECT count(*) FROM chunks_fts`);
   if (!countRes.length || countRes[0].values[0][0] === 0) {
-    // Index first
     const abData = loadAntibodies();
     const csData = loadStrategies();
     syncToSQLite(db, abData.antibodies, csData.strategies);
@@ -799,7 +741,7 @@ async function cmdSearch(args) {
   }
   stmt.free();
 
-  return { count: results.length, results };
+  return { count: results.length, results, engine: 'fts4' };
 }
 
 async function cmdIndex(args) {
@@ -886,9 +828,41 @@ async function cmdGetContext(args) {
   const days = parseInt(args.days) || 90;
   const limit = parseInt(args.limit) || 5;
 
-  const db = await getDB();
+  // Primary: embed daemon semantic search on sessions
+  if (await isDaemonAvailable()) {
+    try {
+      const result = await daemonPost('/search', {
+        query, type: 'session', limit,
+      }, 10000);
+      if (result && result.results && result.results.length > 0) {
+        // Also get recent logs for date context
+        let recentLogs = [];
+        try {
+          const db = await getDB();
+          const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+          const logs = db.prepare(`SELECT date, type, domains, summary FROM session_logs
+            WHERE date >= ? ORDER BY date DESC LIMIT ?`);
+          logs.bind([cutoff, limit]);
+          while (logs.step()) recentLogs.push(logs.getAsObject());
+          logs.free();
+        } catch {}
 
-  // Search session_logs via FTS4
+        return {
+          count: result.count,
+          results: result.results.map(r => ({
+            source_id: r.id,
+            snippet: r.snippet || '',
+            score: r.score,
+          })),
+          recent_logs: recentLogs,
+          engine: 'embedding',
+        };
+      }
+    } catch {}
+  }
+
+  // Fallback: FTS4 search
+  const db = await getDB();
   const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   let sql = `SELECT source_type, source_id, snippet(chunks_fts, '>>>', '<<<', '...') as snippet
              FROM chunks_fts WHERE chunks_fts MATCH ? AND source_type = 'session' LIMIT ?`;
@@ -901,7 +875,6 @@ async function cmdGetContext(args) {
   }
   stmt.free();
 
-  // Also search session_logs table for date filtering
   const logs = db.prepare(`SELECT date, type, domains, summary FROM session_logs
     WHERE date >= ? ORDER BY date DESC LIMIT ?`);
   logs.bind([cutoff, limit]);
@@ -911,77 +884,7 @@ async function cmdGetContext(args) {
   }
   logs.free();
 
-  return { count: results.length, results, recent_logs: recentLogs };
-}
-
-// ── Scan archived conversations for immune analysis ──────────────────────────
-async function cmdScanConversations(args) {
-  const days = parseInt(args.days) || 1;
-  const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-
-  if (!fs.existsSync(CONVERSATIONS_DIR)) {
-    return { ok: true, files: 0, exchanges: 0, note: 'no conversations directory' };
-  }
-
-  const files = fs.readdirSync(CONVERSATIONS_DIR)
-    .filter(f => f.endsWith('.jsonl') && f.replace('.jsonl', '') >= cutoff)
-    .sort();
-
-  const exchanges = [];
-  for (const file of files) {
-    const filePath = path.join(CONVERSATIONS_DIR, file);
-    const date = file.replace('.jsonl', '');
-    const lines = fs.readFileSync(filePath, 'utf8').trim().split('\n').filter(Boolean);
-
-    let currentUser = null;
-    for (const line of lines) {
-      try {
-        const msg = JSON.parse(line);
-        if (msg.role === 'user' && !msg.content.match(/^(HEARTBEAT|Current time:|Read HEARTBEAT|gateway (dis)?connected)/i)) {
-          currentUser = { ts: msg.ts, user: msg.content.slice(0, 500) };
-        } else if (msg.role === 'assistant' && currentUser) {
-          exchanges.push({
-            date,
-            ts: currentUser.ts,
-            user: currentUser.user,
-            assistant: msg.content.slice(0, 500),
-          });
-          currentUser = null;
-        }
-      } catch {}
-    }
-  }
-
-  return {
-    ok: true,
-    files: files.length,
-    exchanges: exchanges.length,
-    cutoff,
-    conversations: exchanges,
-  };
-}
-
-// ── Cleanup processed conversation archives ──────────────────────────────────
-async function cmdCleanupConversations(args) {
-  const days = parseInt(args.days) || 7;
-
-  if (!fs.existsSync(CONVERSATIONS_DIR)) {
-    return { ok: true, deleted: 0 };
-  }
-
-  const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-  const files = fs.readdirSync(CONVERSATIONS_DIR).filter(f => f.endsWith('.jsonl'));
-  let deleted = 0;
-
-  for (const file of files) {
-    const date = file.replace('.jsonl', '');
-    if (date < cutoff) {
-      fs.unlinkSync(path.join(CONVERSATIONS_DIR, file));
-      deleted++;
-    }
-  }
-
-  return { ok: true, deleted, cutoff };
+  return { count: results.length, results, recent_logs: recentLogs, engine: 'fts4' };
 }
 
 async function cmdIndexContext() {
@@ -1568,6 +1471,26 @@ async function cmdCheckDuplicate(args) {
   const domains = JSON.parse(args.domains || '["_global"]');
   const type = args.type || 'antibody';
 
+  // Primary: embed daemon deduplication
+  if (await isDaemonAvailable()) {
+    try {
+      const result = await daemonPost('/deduplicate', {
+        pattern, domains, type,
+        threshold: DEDUP_THRESHOLD_EMBEDDING,
+      }, 10000);
+      if (result) {
+        return {
+          duplicate: result.duplicate,
+          best_match: result.best_match || null,
+          engine: 'embedding-daemon',
+          thresholds: { embedding: DEDUP_THRESHOLD_EMBEDDING, jaccard: DEDUP_THRESHOLD_JACCARD },
+          threshold: result.threshold,
+        };
+      }
+    } catch {}
+  }
+
+  // Fallback: local embeddings + Jaccard
   const items = type === 'antibody' ? loadAntibodies().antibodies : loadStrategies().strategies;
   const match = await findBestDuplicate(pattern, domains, items, type);
 
@@ -1630,7 +1553,7 @@ async function cmdRetrievalTest() {
   // These test semantic matching — queries use different words than the patterns
   const tests = [
     { query: 'network security binding', domains: '["code"]', type: 'antibody',
-      expect_contains: 'AB-CODE-045', desc: 'Should find MnemoClaw port exposure via semantic match' },
+      expect_contains: 'AB-CODE-045', desc: 'Should find OpenClaw port exposure via semantic match' },
     { query: 'Docker container shell script fails', domains: '["code"]', type: 'antibody',
       expect_contains: 'AB-CODE-043', desc: 'Should find CRLF line ending issue' },
     { query: 'credentials secret management', domains: '["code"]', type: 'antibody',
@@ -1699,7 +1622,6 @@ function parseArgs(argv) {
 const COMMANDS = {
   'get-antibodies': cmdGetAntibodies,
   'get-strategies': cmdGetStrategies,
-  'get-all': cmdGetAll,
   'add-antibody': cmdAddAntibody,
   'add-strategy': cmdAddStrategy,
   'update-antibody': cmdUpdateAntibody,
@@ -1712,8 +1634,6 @@ const COMMANDS = {
   'integrity-check': cmdIntegrityCheck,
   'log-session': cmdLogSession,
   'get-context': cmdGetContext,
-  'scan-conversations': cmdScanConversations,
-  'cleanup-conversations': cmdCleanupConversations,
   'index-context': cmdIndexContext,
   'retention-cleanup': cmdRetentionCleanup,
   'score': cmdScore,
