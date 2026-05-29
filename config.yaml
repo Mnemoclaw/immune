@@ -1,14 +1,14 @@
 # ============================================================
-# Immune System — Configuration v4.1.0
+# Immune System — Configuration v5.0.0
 # ============================================================
 # Hybrid adaptive system: Cheatsheet (positive) + Immune (negative)
-# Storage: SQLite FTS4 (immune.sqlite) + JSON fallback
-# Adapter CLI: immune-adapter.js (all reads/writes go through it)
+# Search: Embed daemon (primary) + SQLite FTS4 (offline fallback)
+# Adapter CLI: immune-adapter.js (HTTP client to embed daemon)
 # Can be used independently (/immune) or by Chimera.
 # ============================================================
 
 immune:
-  version: "4.1.0"
+  version: "5.0.0"
   scan_model: "haiku"
   memory_path: "immune_memory.json"
   cheatsheet_path: "cheatsheet_memory.json"

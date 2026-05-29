@@ -1,7 +1,7 @@
 ---
 name: immune
-version: "4.1.0"
-description: "Hybrid adaptive system v4.1: SQLite FTS4 + Adapter pattern + Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. All reads/writes go through immune-adapter.js CLI. Dual-write JSON+SQLite for migration safety. Persistent memory shared with Chimera."
+version: "5.0.0"
+description: "Hybrid adaptive system v5.0: Embed-first architecture. Embed daemon (primary) + FTS4 (fallback). Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Adapter is HTTP client to embed daemon. Shared with Chimera."
 ---
 
 # Immune System v4 — Hybrid Cheatsheet + Immune
