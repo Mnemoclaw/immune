@@ -111,7 +111,7 @@ function ensureLockFile() {
 function getMigrationState() {
   let state = readJSON(MIGRATION_FILE);
   if (!state) {
-    state = { version: '4.0.0', phase: 1, started: today(), sessions_in_phase: 0,
+    state = { version: '5.0.0', phase: 1, started: today(), sessions_in_phase: 0,
               sessions_required: 10, parity_passed: 0, last_parity: null,
               frozen: false, frozen_since: null, total_frozen_days: 0 };
     writeJSON(MIGRATION_FILE, state);
