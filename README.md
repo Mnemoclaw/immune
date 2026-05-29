@@ -10,6 +10,8 @@ A self-improving memory system that makes AI outputs better over time through tw
 
 **v5.0 — Embed-First Architecture:** All search, deduplication, and retrieval now goes through a local embed daemon (bi-encoder + cross-encoder). FTS4 is offline fallback only. This eliminates language-dependent stemming issues and provides true semantic matching across French, English, and any language.
 
+> **Compatibility:** Designed for [Claude Code](https://claude.ai/code) but works with any Anthropic-compatible API endpoint (via `ANTHROPIC_BASE_URL`). Not locked to Anthropic — any provider exposing the Messages API format will work.
+
 ## Quick Start
 
 ```bash
