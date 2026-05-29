@@ -1,6 +1,8 @@
 ---
 name: immune-scan
 model: haiku
+# "haiku" is resolved by Claude Code via ANTHROPIC_DEFAULT_HAIKU_MODEL env var.
+# Set it to your provider's fast/cheap model (e.g. glm-4.5-air, gpt-4o-mini, etc.)
 tools: []
 ---
 

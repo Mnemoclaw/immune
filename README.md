@@ -38,7 +38,7 @@ Then in Claude Code, use `/immune` to scan any output:
 /immune domains=fitness,code Check this workout API
 ```
 
-> **First run:** The embedding model (~22MB) downloads automatically. No API keys needed — everything runs locally via WASM.
+> **First run:** The embedding model (~22MB) downloads automatically. No API keys needed for search/dedup — everything runs locally via WASM. The immune *scan* uses a fast LLM model (resolved via `ANTHROPIC_DEFAULT_HAIKU_MODEL` env var).
 
 ### Automatic Pre-Generation Injection
 

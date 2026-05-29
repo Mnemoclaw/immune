@@ -9,6 +9,11 @@
 
 immune:
   version: "5.0.0"
+  # Model used for immune scanning (cheap/fast model recommended).
+  # Claude Code resolves model names via env vars:
+  #   ANTHROPIC_DEFAULT_HAIKU_MODEL — the fast/cheap tier
+  #   ANTHROPIC_DEFAULT_SONNET_MODEL — the balanced tier
+  # Works with any Anthropic-compatible endpoint (set ANTHROPIC_BASE_URL).
   scan_model: "haiku"
   memory_path: "immune_memory.json"
   cheatsheet_path: "cheatsheet_memory.json"
