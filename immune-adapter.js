@@ -680,36 +680,39 @@ async function cmdUpdateStrategy(args) {
   return { ok: true, id: cs.id, seen_count: cs.seen_count, effectiveness: cs.effectiveness };
 }
 
-async function cmdSearch(args) {
-  const query = args.query;
-  const type = args.type || 'all';
-  const limit = parseInt(args.limit) || 10;
+// ── Reciprocal Rank Fusion (RRF) ─────────────────────────
+// Merges ranked lists from multiple retrievers using ranks, not raw scores.
+// RRF(doc) = Σ 1/(k + rank(doc))  where k=60 (Cormack et al. SIGIR 2009)
 
-  // Primary: embed daemon semantic search
-  if (await isDaemonAvailable()) {
-    try {
-      const searchType = type === 'antibodies' ? 'antibody'
-        : type === 'strategies' ? 'strategy'
-        : type;
-      const result = await daemonPost('/search', {
-        query, type: searchType, limit,
-      }, 10000);
-      if (result && result.results) {
-        return {
-          count: result.count,
-          results: result.results.map(r => ({
-            source_type: r.type,
-            source_id: r.id,
-            snippet: r.snippet || r.pattern || '',
-            score: r.score,
-          })),
-          engine: 'embedding',
-        };
+const RRF_K = 60;
+
+function reciprocalRankFusion(rankedLists) {
+  // rankedLists: array of arrays, each is [{id, data, score?}, ...] ordered by relevance
+  const scores = new Map(); // id -> { rrfScore, data }
+
+  for (const list of rankedLists) {
+    for (let rank = 0; rank < list.length; rank++) {
+      const item = list[rank];
+      const key = item.id;
+      const contribution = 1.0 / (RRF_K + rank + 1); // rank is 0-indexed, formula uses 1-indexed
+      if (!scores.has(key)) {
+        scores.set(key, { rrfScore: 0, data: item.data, engines: [] });
       }
-    } catch {}
+      const entry = scores.get(key);
+      entry.rrfScore += contribution;
+      entry.engines.push(item.engine || 'unknown');
+    }
   }
 
-  // Fallback: FTS4 search
+  // Sort by fused score descending
+  return [...scores.entries()]
+    .map(([id, val]) => ({ id, ...val }))
+    .sort((a, b) => b.rrfScore - a.rrfScore);
+}
+
+// ── Search: embedding + keyword via RRF ──────────────────
+
+async function fts4Search(query, type, limit) {
   const db = await getDB();
   const countRes = db.exec(`SELECT count(*) FROM chunks_fts`);
   if (!countRes.length || countRes[0].values[0][0] === 0) {
@@ -726,7 +729,7 @@ async function cmdSearch(args) {
 
   if (type !== 'all') {
     sql += ` AND source_type = ?`;
-    params.push(type === 'antibodies' ? 'antibody' : 'strategy');
+    params.push(type === 'antibodies' ? 'antibody' : type === 'strategies' ? 'strategy' : type);
   }
   sql += ` LIMIT ?`;
   params.push(limit);
@@ -736,12 +739,70 @@ async function cmdSearch(args) {
   const results = [];
   while (stmt.step()) {
     const row = stmt.getAsObject();
-    results.push({ source_type: row.source_type, source_id: row.source_id,
-                   snippet: row.snippet });
+    results.push({
+      id: `${row.source_type}:${row.source_id}`,
+      data: { source_type: row.source_type, source_id: row.source_id, snippet: row.snippet },
+      engine: 'fts4',
+    });
   }
   stmt.free();
+  return results;
+}
 
-  return { count: results.length, results, engine: 'fts4' };
+async function embeddingSearch(query, type, limit) {
+  const searchType = type === 'antibodies' ? 'antibody'
+    : type === 'strategies' ? 'strategy'
+    : type;
+  const result = await daemonPost('/search', {
+    query, type: searchType, limit,
+  }, 10000);
+  if (!result || !result.results) return [];
+  return result.results.map(r => ({
+    id: `${r.type}:${r.id}`,
+    data: { source_type: r.type, source_id: r.id, snippet: r.snippet || r.pattern || '', score: r.score },
+    engine: 'embedding',
+  }));
+}
+
+async function cmdSearch(args) {
+  const query = args.query;
+  const type = args.type || 'all';
+  const limit = parseInt(args.limit) || 10;
+
+  const daemonUp = await isDaemonAvailable();
+
+  if (daemonUp) {
+    // Hybrid: run both engines in parallel, fuse with RRF
+    const [embResults, ftsResults] = await Promise.all([
+      embeddingSearch(query, type, limit).catch(() => []),
+      fts4Search(query, type, limit).catch(() => []),
+    ]);
+
+    if (embResults.length === 0 && ftsResults.length === 0) {
+      return { count: 0, results: [], engine: 'none' };
+    }
+
+    const fused = reciprocalRankFusion([embResults, ftsResults]);
+
+    return {
+      count: fused.length,
+      results: fused.slice(0, limit).map(f => ({
+        ...f.data,
+        rrf_score: Math.round(f.rrfScore * 10000) / 10000,
+        engines: [...new Set(f.engines)],
+      })),
+      engine: 'rrf',
+      engine_detail: { embedding: embResults.length, fts4: ftsResults.length },
+    };
+  }
+
+  // Fallback: FTS4 only (daemon unavailable)
+  const ftsResults = await fts4Search(query, type, limit);
+  return {
+    count: ftsResults.length,
+    results: ftsResults.map(r => r.data),
+    engine: 'fts4',
+  };
 }
 
 async function cmdIndex(args) {
