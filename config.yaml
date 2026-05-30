@@ -8,7 +8,7 @@
 # ============================================================
 
 immune:
-  version: "5.0.0"
+  version: "5.1.0"
   # Model used for immune scanning (cheap/fast model recommended).
   # Claude Code resolves model names via env vars:
   #   ANTHROPIC_DEFAULT_HAIKU_MODEL — the fast/cheap tier
