@@ -8,62 +8,33 @@
 //   Pass final: housekeep → rescan → measure retained
 //
 // This proves: "Immune improves over time, and housekeeping preserves quality"
+// Uses immune-adapter.js CLI directly — no daemon required.
 // ============================================================================
 
-const http = require('http');
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 
-const DAEMON_HOST = '127.0.0.1';
-const DAEMON_PORT = 8091;
 const SCRIPT_DIR = __dirname;
 const CASES_FILE = process.argv.includes('--cases') ? process.argv[process.argv.indexOf('--cases') + 1] : path.join(SCRIPT_DIR, 'cases-learning.json');
 const RESULTS_DIR = path.join(SCRIPT_DIR, 'results');
+const ADAPTER = path.join(SCRIPT_DIR, '..', 'immune-adapter.js');
 const TOTAL_PASSES = 6;
 const HOUSEKEEP_AFTER_PASS = 4;
 
-function daemonPost(pth, body) {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body);
-    const req = http.request(
-      { hostname: DAEMON_HOST, port: DAEMON_PORT, path: pth, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
-      (res) => {
-        let d = '';
-        res.on('data', c => d += c);
-        res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse')); } });
-      }
-    );
-    req.on('error', reject);
-    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.end(payload);
-  });
-}
-
-function daemonGet(pth) {
-  return new Promise((resolve, reject) => {
-    const req = http.request(
-      { hostname: DAEMON_HOST, port: DAEMON_PORT, path: pth, method: 'GET' },
-      (res) => {
-        let d = '';
-        res.on('data', c => d += c);
-        res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse')); } });
-      }
-    );
-    req.on('error', reject);
-    req.setTimeout(5000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.end();
-  });
-}
-
-// Compute embedding for a text via daemon
-async function embedText(text) {
+function runAdapter(...args) {
   try {
-    const r = await daemonPost('/embed', { text });
-    return r.vector || null;
-  } catch {
+    const out = execFileSync('node', [ADAPTER, ...args], { encoding: 'utf8', timeout: 30000, stdio: ['pipe','pipe','pipe'] });
+    return JSON.parse(out.trim());
+  } catch (e) {
     return null;
   }
+}
+
+async function embedText(text) {
+  const result = runAdapter('embed', '--text', text);
+  if (result && result.vector) return result.vector;
+  return null;
 }
 
 function cosine(a, b) {
@@ -77,28 +48,22 @@ function cosine(a, b) {
 let memoryAntibodies = [];
 
 async function scanWithMemory(input, domain) {
-  // Use daemon's /search to match input against patterns (bi-encoder + cross-encoder)
-  // Also search in-memory store using input embedding
   const inputVec = await embedText(input);
 
   const matches = [];
   for (const ab of memoryAntibodies) {
-    // Compare input embedding against pattern embedding (how immune actually works)
     const sim = cosine(inputVec, ab._vec);
     if (sim >= 0.3) {
       matches.push({ ...ab, score: sim });
     }
   }
 
-  // Also compute embedding of a combined query for better matching
-  // (immune's scan agent sees the code + has antibody descriptions)
+  // Keyword overlap as bonus signal
   const inputKeywords = input.toLowerCase().split(/[\s\-_=<>{}()[\];,.'"]+/).filter(w => w.length >= 3);
   for (const ab of memoryAntibodies) {
     const patternKeywords = ab.pattern.toLowerCase().split(/[\s\-_=<>{}()[\];,.'"]+/).filter(w => w.length >= 3);
-    // Keyword overlap as bonus signal
     const overlap = inputKeywords.filter(k => patternKeywords.some(p => p.includes(k) || k.includes(p))).length;
     const keywordScore = inputKeywords.length > 0 ? overlap / inputKeywords.length : 0;
-    // Boost matches that have keyword overlap
     const existingMatch = matches.find(m => m.id === ab.id);
     if (existingMatch) {
       existingMatch.score = existingMatch.score * 0.7 + keywordScore * 0.3;
@@ -114,16 +79,15 @@ async function scanWithMemory(input, domain) {
 async function main() {
   console.log('\x1b[36mImmune v5.0 — Learning Curve Benchmark\x1b[0m');
   console.log('==========================================');
-  console.log('Measuring how immune improves with each learning pass.\n');
+  console.log('Measuring how immune improves with each learning pass.');
+  console.log('Using local embeddings via immune-adapter.js (no daemon).\n');
 
-  try {
-    const health = await daemonGet('/health');
-    if (!health.ok) throw new Error('unhealthy');
-    console.log('Embed daemon: \x1b[32mONLINE\x1b[0m');
-  } catch {
-    console.log('Embed daemon: \x1b[31mOFFLINE\x1b[0m');
+  const stats = runAdapter('stats');
+  if (!stats) {
+    console.log('Adapter: \x1b[31mFAILED\x1b[0m — check immune-adapter.js');
     process.exit(1);
   }
+  console.log(`Adapter: \x1b[32mOK\x1b[0m`);
 
   const cases = JSON.parse(fs.readFileSync(CASES_FILE, 'utf8'));
   const totalErrors = cases.reduce((sum, c) => sum + c.errors.length, 0);
@@ -148,15 +112,12 @@ async function main() {
 
     console.log(`\x1b[1m═══ ${phase} — Memory: ${memoryAntibodies.length} antibodies ═══\x1b[0m`);
 
-    // Housekeep step: remove duplicates and low-severity patterns seen only once
+    // Housekeep step
     if (isHousekeep) {
       const before = memoryAntibodies.length;
-      // Realistic housekeep: keep critical always, keep warning if seen >= 2
-      // Also deduplicate patterns with similarity > 0.85
       const kept = [];
       for (const ab of memoryAntibodies) {
         if (ab.severity === 'critical' || (ab._seen || 0) >= 2) {
-          // Check for duplicates against already-kept
           const isDup = kept.some(k => cosine(k._vec, ab._vec) >= 0.85);
           if (!isDup) kept.push(ab);
         }
@@ -178,22 +139,17 @@ async function main() {
       const detectedErrors = [];
 
       for (const err of c.errors) {
-        // Check if any match in memory corresponds to this error
-        // Match by: pattern similarity (embedding) OR keyword overlap
         let found = false;
 
         for (const match of matches) {
-          // Direct embedding similarity between the error and the memory pattern
           const errVec = err._vec;
           const patternSim = cosine(errVec, match._vec);
 
-          // Also check keyword overlap between error pattern and match pattern
           const errKeywords = err.pattern.toLowerCase().split(/[\s\-_=<>{}()[\];,.'"]+/).filter(w => w.length >= 3);
           const matchKeywords = match.pattern.toLowerCase().split(/[\s\-_=<>{}()[\];,.'"]+/).filter(w => w.length >= 3);
           const kwOverlap = errKeywords.filter(k => matchKeywords.some(m => m.includes(k) || k.includes(m))).length;
           const kwScore = errKeywords.length > 0 ? kwOverlap / errKeywords.length : 0;
 
-          // Combined score: if memory pattern is close to the expected error
           if (patternSim >= 0.5 || kwScore >= 0.3 || (patternSim >= 0.3 && kwScore >= 0.15)) {
             found = true;
             break;
@@ -238,20 +194,16 @@ async function main() {
       details: passDetails
     });
 
-    // Learning step: inject errors from MISSED cases (simulate immune learning)
-    // In pass 0, inject ALL errors (immune learns from ground truth)
-    // In subsequent passes, only inject errors that were STILL missed
+    // Learning step
     if (pass < TOTAL_PASSES - 1) {
       let newPatterns = 0;
       let reinforced = 0;
 
-      // First: reinforce patterns that successfully detected errors (spaced repetition)
       for (const c of cases) {
         const pd = passDetails.find(d => d.id === c.id);
         for (const err of c.errors) {
           const errText = err.pattern.substring(0, 50) + '...';
           if (pd.detected_patterns.includes(errText)) {
-            // Find the memory antibody that caught this
             const catcher = memoryAntibodies.find(ab => cosine(ab._vec, err._vec) >= 0.5);
             if (catcher) {
               catcher._seen = (catcher._seen || 0) + 1;
@@ -270,11 +222,9 @@ async function main() {
           });
         });
 
-        // In pass 0, learn ALL errors. In later passes, learn only newly missed ones.
         const toLearn = pass === 0 ? c.errors : missedErrors;
 
         for (const err of toLearn) {
-          // Check if already in memory
           const alreadyKnown = memoryAntibodies.some(ab => cosine(ab._vec, err._vec) >= 0.7);
           if (!alreadyKnown) {
             memoryAntibodies.push({
@@ -312,7 +262,6 @@ async function main() {
     console.log(`  ${marker}${lc.pass}     ${phase}${mem}  ${det} ${rate}  ${full}  ${part}  ${miss}\x1b[0m`);
   }
 
-  // Improvement delta
   const empty = learningCurve[0];
   const best = learningCurve.reduce((a, b) => a.detection_rate > b.detection_rate ? a : b);
   const final_ = learningCurve[learningCurve.length - 1];
@@ -324,7 +273,6 @@ async function main() {
   console.log(`  \x1b[1mFinal:             ${final_.detection_rate}%\x1b[0m (${final_.errors_detected}/${final_.errors_total})`);
   console.log(`  \x1b[1mImprovement:       +${improvement} pts\x1b[0m (empty → peak)`);
 
-  // Housekeep impact
   const beforeHK = learningCurve[HOUSEKEEP_AFTER_PASS - 1];
   const afterHK = learningCurve[HOUSEKEEP_AFTER_PASS];
   if (beforeHK && afterHK) {
@@ -342,6 +290,7 @@ async function main() {
     timestamp: new Date().toISOString(),
     version: '5.0',
     type: 'learning_curve',
+    engine: 'local',
     cases: cases.length,
     total_errors: totalErrors,
     total_passes: TOTAL_PASSES,

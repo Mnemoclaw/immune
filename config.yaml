@@ -2,8 +2,8 @@
 # Immune System — Configuration v5.0.0
 # ============================================================
 # Hybrid adaptive system: Cheatsheet (positive) + Immune (negative)
-# Search: Embed daemon (primary) + SQLite FTS4 (offline fallback)
-# Adapter CLI: immune-adapter.js (HTTP client to embed daemon)
+# Search: Local embeddings (primary) + SQLite FTS4 (secondary), fused via RRF
+# Adapter CLI: immune-adapter.js (standalone, no external services needed)
 # Can be used independently (/immune) or by Chimera.
 # ============================================================
 
@@ -101,7 +101,7 @@ context_memory:
   retention_hot_days: 90
   archive_dir: "context/archive"
   index_memory_md: true
-  memory_md_path: "../../projects/C--Users-kiki/memory/MEMORY.md"
+  memory_md_path: "../MEMORY.md"
   user_md_path: "USER.md"
 
 scoring:

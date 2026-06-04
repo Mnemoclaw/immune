@@ -1,7 +1,7 @@
 ---
 name: immune
-version: "5.0.0"
-description: "Hybrid adaptive system v5.0: Embed-first architecture. Embed daemon (primary) + FTS4 (fallback). Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Adapter is HTTP client to embed daemon. Shared with Chimera."
+version: "5.1.0"
+description: "Hybrid adaptive system v5.0: Local embeddings (primary) + FTS4 (secondary) via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services needed. Shared with Chimera."
 ---
 
 # Immune System v4 — Hybrid Cheatsheet + Immune
