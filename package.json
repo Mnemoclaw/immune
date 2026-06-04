@@ -1,6 +1,6 @@
 {
   "name": "immune",
-  "version": "5.0.0",
+  "version": "5.1.0",
   "main": "immune-adapter.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1"
@@ -12,10 +12,13 @@
   ],
   "author": "Jacques Chauvin",
   "license": "MIT",
-  "description": "Embed-first adaptive memory system for AI agents",
+  "description": "Hybrid adaptive memory system for AI agents — local embeddings, zero daemon",
   "dependencies": {
     "@xenova/transformers": "^2.17.2",
     "proper-lockfile": "^4.1.2",
     "sql.js": "^1.14.1"
+  },
+  "overrides": {
+    "protobufjs": "^7.5.8"
   }
 }

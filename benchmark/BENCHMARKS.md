@@ -1,13 +1,12 @@
 # Immune v5.0 — Benchmarks
 
-Three benchmarks measuring the embed-first adaptive memory system, using **test cases written by independent AI agents that never saw the immune memory data**.
+Three benchmarks measuring the hybrid adaptive memory system, using **test cases written by independent AI agents that never saw the immune memory data**.
 
 ## Test Environment
 
 - **Model**: Xenova/all-MiniLM-L6-v2 (384 dims, local WASM)
-- **Reranker**: Xenova/bge-reranker-base (cross-encoder)
 - **Corpus**: 121 antibodies + 121 strategies (real production data)
-- **Platform**: Windows 11, Docker embed daemon on port 8091
+- **Platform**: Windows 11, local embeddings (no daemon)
 
 ---
 
@@ -186,8 +185,8 @@ These are exactly the cases where a **code-aware LLM** (the scan agent) compleme
 ## Reproducing
 
 ```bash
-# Start embed daemon
-docker compose up -d embed
+# Install dependencies (first time only)
+npm install
 
 # Run blind benchmarks (all three)
 node benchmark/run-blind.js

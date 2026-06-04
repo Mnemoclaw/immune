@@ -3,58 +3,9 @@
 
 const fs = require('fs');
 const path = require('path');
-const http = require('http');
 const lockfile = require('proper-lockfile');
 
 const { sanitize } = require('./sanitizer');
-
-// ── Embed Daemon Client ──────────────────────────────────
-// Primary search/dedup via embed daemon (port 8091), fallback to local FTS4/Jaccard.
-
-const EMBED_DAEMON_HOST = '127.0.0.1';
-const EMBED_DAEMON_PORT = 8091;
-let _daemonAvailable = null; // null = not checked, true/false = result
-
-function daemonPost(pth, body, timeoutMs) {
-  return new Promise((resolve, reject) => {
-    const payload = JSON.stringify(body);
-    const req = http.request(
-      { hostname: EMBED_DAEMON_HOST, port: EMBED_DAEMON_PORT, path: pth, method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(payload) } },
-      (res) => {
-        let d = '';
-        res.on('data', c => d += c);
-        res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse')); } });
-      }
-    );
-    req.on('error', reject);
-    req.setTimeout(timeoutMs || 5000, () => { req.destroy(); reject(new Error('timeout')); });
-    req.end(payload);
-  });
-}
-
-async function isDaemonAvailable() {
-  if (_daemonAvailable !== null) return _daemonAvailable;
-  try {
-    const result = await new Promise((resolve, reject) => {
-      const req = http.request(
-        { hostname: EMBED_DAEMON_HOST, port: EMBED_DAEMON_PORT, path: '/health', method: 'GET' },
-        (res) => {
-          let d = '';
-          res.on('data', c => d += c);
-          res.on('end', () => { try { resolve(JSON.parse(d)); } catch { reject(new Error('parse')); } });
-        }
-      );
-      req.on('error', reject);
-      req.setTimeout(2000, () => { req.destroy(); reject(new Error('timeout')); });
-      req.end();
-    });
-    _daemonAvailable = result && result.ok === true;
-  } catch {
-    _daemonAvailable = false;
-  }
-  return _daemonAvailable;
-}
 
 const IMMUNE_DIR = __dirname;
 const DB_PATH = path.join(IMMUNE_DIR, 'immune.sqlite');
@@ -63,7 +14,7 @@ const JSON_CS = path.join(IMMUNE_DIR, 'cheatsheet_memory.json');
 const MIGRATION_FILE = path.join(IMMUNE_DIR, 'migration_state.json');
 const CONTEXT_DIR = path.join(IMMUNE_DIR, 'context');
 const ARCHIVE_DIR = path.join(CONTEXT_DIR, 'archive');
-const MEMORY_MD = path.join(IMMUNE_DIR, '..', '..', 'projects', 'C--Users-kiki', 'memory', 'MEMORY.md');
+const MEMORY_MD = path.join(IMMUNE_DIR, '..', 'MEMORY.md'); // override via MEMORY_MD env var
 const USER_MD = path.join(IMMUNE_DIR, 'USER.md');
 const ARCHIVE_AB = path.join(IMMUNE_DIR, 'archived_antibodies.json');
 const ARCHIVE_CS = path.join(IMMUNE_DIR, 'archived_strategies.json');
@@ -750,18 +701,44 @@ async function fts4Search(query, type, limit) {
 }
 
 async function embeddingSearch(query, type, limit) {
+  // Local embedding-based search using rerankItems
+  await ensureTransformersInstalled();
+  if (_embeddingsAvailable !== true) return [];
+
   const searchType = type === 'antibodies' ? 'antibody'
     : type === 'strategies' ? 'strategy'
     : type;
-  const result = await daemonPost('/search', {
-    query, type: searchType, limit,
-  }, 10000);
-  if (!result || !result.results) return [];
-  return result.results.map(r => ({
-    id: `${r.type}:${r.id}`,
-    data: { source_type: r.type, source_id: r.id, snippet: r.snippet || r.pattern || '', score: r.score },
-    engine: 'embedding',
-  }));
+
+  let items = [];
+  if (searchType === 'antibody' || searchType === 'all') {
+    const abData = loadAntibodies();
+    items.push(...abData.antibodies.map(ab => ({ ...ab, _searchType: 'antibody' })));
+  }
+  if (searchType === 'strategy' || searchType === 'all') {
+    const csData = loadStrategies();
+    items.push(...csData.strategies.map(cs => ({ ...cs, _searchType: 'strategy' })));
+  }
+
+  if (items.length === 0) return [];
+
+  const queryEmbedding = await embedText(query);
+  if (!queryEmbedding) return [];
+
+  const scored = [];
+  for (const item of items) {
+    const itemText = item.pattern + ' ' + (item.correction || item.example || '');
+    const itemEmbedding = await embedText(itemText);
+    if (!itemEmbedding) continue;
+    const score = cosineSimilarity(queryEmbedding, itemEmbedding);
+    scored.push({
+      id: `${item._searchType}:${item.id}`,
+      data: { source_type: item._searchType, source_id: item.id, snippet: itemText.slice(0, 200), score },
+      engine: 'embedding',
+    });
+  }
+
+  scored.sort((a, b) => (b.data.score || 0) - (a.data.score || 0));
+  return scored.slice(0, limit);
 }
 
 async function cmdSearch(args) {
@@ -769,21 +746,18 @@ async function cmdSearch(args) {
   const type = args.type || 'all';
   const limit = parseInt(args.limit) || 10;
 
-  const daemonUp = await isDaemonAvailable();
+  // Hybrid: run both engines in parallel, fuse with RRF
+  const [embResults, ftsResults] = await Promise.all([
+    embeddingSearch(query, type, limit).catch(() => []),
+    fts4Search(query, type, limit).catch(() => []),
+  ]);
 
-  if (daemonUp) {
-    // Hybrid: run both engines in parallel, fuse with RRF
-    const [embResults, ftsResults] = await Promise.all([
-      embeddingSearch(query, type, limit).catch(() => []),
-      fts4Search(query, type, limit).catch(() => []),
-    ]);
+  if (embResults.length === 0 && ftsResults.length === 0) {
+    return { count: 0, results: [], engine: 'none' };
+  }
 
-    if (embResults.length === 0 && ftsResults.length === 0) {
-      return { count: 0, results: [], engine: 'none' };
-    }
-
+  if (embResults.length > 0 && ftsResults.length > 0) {
     const fused = reciprocalRankFusion([embResults, ftsResults]);
-
     return {
       count: fused.length,
       results: fused.slice(0, limit).map(f => ({
@@ -796,12 +770,12 @@ async function cmdSearch(args) {
     };
   }
 
-  // Fallback: FTS4 only (daemon unavailable)
-  const ftsResults = await fts4Search(query, type, limit);
+  // Single engine available
+  const results = embResults.length > 0 ? embResults : ftsResults;
   return {
-    count: ftsResults.length,
-    results: ftsResults.map(r => r.data),
-    engine: 'fts4',
+    count: results.length,
+    results: results.slice(0, limit).map(r => r.data),
+    engine: embResults.length > 0 ? 'embedding' : 'fts4',
   };
 }
 
@@ -889,40 +863,7 @@ async function cmdGetContext(args) {
   const days = parseInt(args.days) || 90;
   const limit = parseInt(args.limit) || 5;
 
-  // Primary: embed daemon semantic search on sessions
-  if (await isDaemonAvailable()) {
-    try {
-      const result = await daemonPost('/search', {
-        query, type: 'session', limit,
-      }, 10000);
-      if (result && result.results && result.results.length > 0) {
-        // Also get recent logs for date context
-        let recentLogs = [];
-        try {
-          const db = await getDB();
-          const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
-          const logs = db.prepare(`SELECT date, type, domains, summary FROM session_logs
-            WHERE date >= ? ORDER BY date DESC LIMIT ?`);
-          logs.bind([cutoff, limit]);
-          while (logs.step()) recentLogs.push(logs.getAsObject());
-          logs.free();
-        } catch {}
-
-        return {
-          count: result.count,
-          results: result.results.map(r => ({
-            source_id: r.id,
-            snippet: r.snippet || '',
-            score: r.score,
-          })),
-          recent_logs: recentLogs,
-          engine: 'embedding',
-        };
-      }
-    } catch {}
-  }
-
-  // Fallback: FTS4 search
+  // FTS4 search on sessions
   const db = await getDB();
   const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
   let sql = `SELECT source_type, source_id, snippet(chunks_fts, '>>>', '<<<', '...') as snippet
@@ -1532,26 +1473,7 @@ async function cmdCheckDuplicate(args) {
   const domains = JSON.parse(args.domains || '["_global"]');
   const type = args.type || 'antibody';
 
-  // Primary: embed daemon deduplication
-  if (await isDaemonAvailable()) {
-    try {
-      const result = await daemonPost('/deduplicate', {
-        pattern, domains, type,
-        threshold: DEDUP_THRESHOLD_EMBEDDING,
-      }, 10000);
-      if (result) {
-        return {
-          duplicate: result.duplicate,
-          best_match: result.best_match || null,
-          engine: 'embedding-daemon',
-          thresholds: { embedding: DEDUP_THRESHOLD_EMBEDDING, jaccard: DEDUP_THRESHOLD_JACCARD },
-          threshold: result.threshold,
-        };
-      }
-    } catch {}
-  }
-
-  // Fallback: local embeddings + Jaccard
+  // Local embeddings + Jaccard
   const items = type === 'antibody' ? loadAntibodies().antibodies : loadStrategies().strategies;
   const match = await findBestDuplicate(pattern, domains, items, type);
 
@@ -1662,6 +1584,16 @@ async function cmdRetrievalTest() {
   };
 }
 
+// ── Embed Command (utility for benchmarks/tools) ────────
+
+async function cmdEmbed(args) {
+  const text = args.text;
+  if (!text) return { error: 'Usage: embed --text "some text"' };
+  const vec = await embedText(text);
+  if (!vec) return { error: 'Embeddings unavailable', vector: null };
+  return { dims: vec.length, vector: vec };
+}
+
 // ── CLI Router ──────────────────────────────────────────
 
 function parseArgs(argv) {
@@ -1690,6 +1622,7 @@ const COMMANDS = {
   'search': cmdSearch,
   'index': cmdIndex,
   'stats': cmdStats,
+  'embed': cmdEmbed,
   'migrate-status': cmdMigrateStatus,
   'migrate-advance': cmdMigrateAdvance,
   'integrity-check': cmdIntegrityCheck,

@@ -1,4 +1,4 @@
-# Immune System v5.0 — Embed-First Adaptive Memory for AI Agents
+# Immune System v5.0 — Hybrid Adaptive Memory for AI Agents
 
 [![Stars](https://img.shields.io/github/stars/Mnemoclaw/immune?style=social)](https://github.com/Mnemoclaw/immune)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -8,7 +8,7 @@ A self-improving memory system that makes AI outputs better over time through tw
 - **Immune (antibodies)** — Detects and prevents known errors (negative patterns)
 - **Cheatsheet (strategies)** — Injects proven best practices before generation (positive patterns)
 
-**v5.0 — Embed-First Architecture:** All search, deduplication, and retrieval now goes through a local embed daemon (bi-encoder + cross-encoder). FTS4 is offline fallback only. This eliminates language-dependent stemming issues and provides true semantic matching across French, English, and any language.
+**v5.0 — Hybrid Search:** Local embeddings (bi-encoder) + FTS4 keyword search, fused via Reciprocal Rank Fusion (RRF). Everything runs in-process via WASM — no server, no daemon, no API keys for search/dedup.
 
 > **Compatibility:** Designed for [Claude Code](https://claude.ai/code) but works with any Anthropic-compatible API endpoint (via `ANTHROPIC_BASE_URL`). Not locked to Anthropic — any provider exposing the Messages API format will work.
 
@@ -42,7 +42,7 @@ Then in Claude Code, use `/immune` to scan any output:
 
 ### Automatic Pre-Generation Injection
 
-Inject relevant strategies automatically before every Claude response via the embed daemon:
+Inject relevant strategies automatically before every Claude response:
 
 ```bash
 # Test the inject script manually
@@ -69,52 +69,30 @@ Add to `~/.claude/settings.json`:
 }
 ```
 
-The inject hook calls the embed daemon's `/suggest-domains` → `/immune-get-all` pipeline. Falls back to local keyword matching when the daemon is offline.
+The inject hook detects domains from your prompt via keyword matching and injects up to 5 HOT strategies as compact XML. Zero injection on unrelated prompts. ~50ms overhead.
 
 ## Architecture (v5.0)
 
 ```
 [User Request]
-  --> Embed daemon: /suggest-domains (semantic domain discovery)
-  --> Embed daemon: /immune-get-all (retrieval + 3-stage reranking)
+  --> Local embeddings: semantic domain discovery
+  --> Hybrid search: embeddings + FTS4 via Reciprocal Rank Fusion
   --> Inject cheatsheet strategies (positive patterns)
   --> Generate output (with strategy context)
   --> Immune scan (detect known + new errors)
   --> Fix errors + learn new antibodies
-  --> Embed daemon: /deduplicate (semantic dedup before adding)
+  --> Local embedding dedup (before adding new patterns)
   --> Score (0-100, domain-normalized)
   --> Session log (for future context recall)
 ```
 
-```
-[Embed Daemon — port 8091]
-  Bi-encoder: Xenova/all-MiniLM-L6-v2 (384 dims, ~22MB)
-  Cross-encoder: Xenova/bge-reranker-base
-
-  Endpoints:
-    POST /suggest-domains  — Semantic domain discovery from query
-    POST /immune-get-all   — Combined AB+CS retrieval + reranking
-    POST /search           — Universal semantic search
-    POST /deduplicate      — Pattern similarity check
-    POST /embed            — Single text embedding
-    POST /embed-batch      — Batch embeddings
-    POST /rerank           — Generic cross-encoder reranking
-    GET  /health           — Health check
-```
-
 ## Key Features
 
-### Embed-First Search (v5.0)
-1. **Embed daemon** (primary) — Bi-encoder embeddings for all search, dedup, context recall
-2. **FTS4** (fallback) — SQLite full-text search used only when daemon is offline
-3. **Jaccard** (fallback) — Trigram similarity when no embeddings available
-
-The adapter (`immune-adapter.js`) is now an HTTP client to the embed daemon. Search, context, and dedup commands call the daemon first, fall back to local FTS4/Jaccard on failure.
-
-### 3-Stage Retrieval Pipeline
-1. **TF-IDF Pre-filter** — Quick scoring to narrow candidates (no model needed)
-2. **Bi-encoder Scoring** — `all-MiniLM-L6-v2` computes query/item embeddings, ranks by cosine similarity
-3. **Cross-encoder Reranking** — `bge-reranker-base` scores top candidates with query+item pairs
+### Hybrid Search (v5.0)
+1. **Embeddings** (primary) — `Xenova/all-MiniLM-L6-v2` (384 dims, ~22MB, WASM) for semantic matching
+2. **FTS4** (secondary) — SQLite full-text search for keyword recall
+3. **RRF Fusion** — Reciprocal Rank Fusion merges both engines using ranks, not raw scores
+4. **TF-IDF + Trigrams** — Fallback when embeddings unavailable
 
 ### Hot/Cold Tiering
 Keeps context lean for optimal performance:
@@ -123,19 +101,18 @@ Keeps context lean for optimal performance:
 
 ### Dual Storage
 - **JSON** (`immune_memory.json` / `cheatsheet_memory.json`) — Primary, portable
-- **SQLite** (`immune.sqlite`) — FTS4 index for offline fallback
+- **SQLite** (`immune.sqlite`) — FTS4 full-text search + embedding cache
 
 ### Deduplication
-- Embed daemon semantic similarity (threshold: 0.7)
-- Local embedding cosine similarity fallback
+- Local embedding cosine similarity (threshold: 0.7)
 - Jaccard + longest common subsequence fallback (threshold: 0.55)
 
 ## File Structure
 
 ```
 immune/
-  immune-adapter.js        # CLI adapter — HTTP client to embed daemon
-  immune-inject.js         # Pre-generation hook (daemon → fallback)
+  immune-adapter.js        # CLI adapter — all operations go through this
+  immune-inject.js         # Pre-generation hook (local keyword detection)
   sanitizer.js             # Input sanitization
   config.yaml              # Full configuration
   immune_memory.json       # Antibodies
@@ -143,12 +120,17 @@ immune/
   skill.md                 # Claude Code skill definition
   agents/
     immune-scan.md         # Scan agent instructions
+  benchmark/
+    run-blind.js           # Blind retrieval benchmarks
+    run-learning.js        # Learning curve benchmarks
+    cases-learning-blind.json
+    BENCHMARKS.md          # Benchmark results
 ```
 
 ## CLI Commands
 
 ```bash
-# Query (via embed daemon)
+# Search (hybrid embeddings + FTS4 via RRF)
 node immune-adapter.js search --query "docker crash loop" --type antibody
 node immune-adapter.js get-context --query "fitness programme" --days 90
 node immune-adapter.js check-duplicate --pattern "..." --type antibody
@@ -164,12 +146,18 @@ node immune-adapter.js update-antibody --id AB-001 --increment_seen
 
 # Bulk
 node immune-adapter.js flush-pending --json '{"antibodies":[...],"strategies":[...]}'
+node immune-adapter.js import --file export.immune.json
 
 # Maintenance
+node immune-adapter.js index              # Rebuild FTS4 index
 node immune-adapter.js stats              # Show counts and migration state
 node immune-adapter.js housekeep          # Archive useless patterns
 node immune-adapter.js integrity-check    # SQLite integrity check
 node immune-adapter.js freeze / unfreeze  # Pause/resume aging clocks
+
+# Testing
+node immune-adapter.js similarity-test    # Run dedup test suite
+node immune-adapter.js retrieval-test     # Run semantic retrieval tests
 ```
 
 ## Domains
@@ -189,20 +177,18 @@ Patterns are tagged with domains for targeted retrieval:
 | `travel` | voyage, hôtel, billet, itinéraire |
 | `_global` | Cross-domain patterns |
 
-Domain discovery is now semantic via the embed daemon — no keyword matching required.
-
 ## Configuration
 
 All tunable parameters are in `config.yaml`:
-- Embed daemon connection (host, port)
 - Deduplication thresholds (embedding: 0.7, Jaccard: 0.55)
 - Hot/Cold criteria
 - Housekeeping limits and archival rules
+- Domain keywords for auto-detection
 
 ## Dependencies
 
 - `@xenova/transformers` — Local embedding model (auto-installed on first use)
-- `better-sqlite3` — Native SQLite for FTS4 fallback
+- `sql.js` — SQLite in WASM for FTS4 search
 - `proper-lockfile` — Concurrency safety
 
 ## License
