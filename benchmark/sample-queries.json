@@ -1,0 +1,26 @@
+{
+  "_comment": "Sample blind retrieval queries for the immune benchmark. These were written by an independent AI agent that had NEVER seen the immune memory data. Each query has an expected_category used for semantic match scoring (not specific pattern IDs). Copy this file to benchmark-queries.json and adapt to your own memory contents, or set IMMUNE_BENCH_QUERIES env var.",
+  "_categories_doc": "Categories are scored via keyword overlap in run-blind.js:categoryMatch(). The expected_category MUST be one of the keys defined there. To add new categories, edit categoryMatch() in run-blind.js.",
+  "queries": [
+    { "id": "R-01", "language": "fr", "domain": "docker",      "query": "container docker crash MODULE_NOT_FOUND",            "expected_category": "path_conversion_windows_docker" },
+    { "id": "R-02", "language": "en", "domain": "docker",      "query": "Docker Compose eats all RAM",                       "expected_category": "docker_resource_limits" },
+    { "id": "R-03", "language": "en", "domain": "video",       "query": "video render wrong length cut short",               "expected_category": "frame_count_mismatch_video" },
+    { "id": "R-04", "language": "fr", "domain": "video",       "query": "ancien audio qui revient dans le render",           "expected_category": "stale_cache_rendering_pipeline" },
+    { "id": "R-05", "language": "en", "domain": "security",    "query": "prevent command injection AI-generated text",       "expected_category": "exec_command_injection" },
+    { "id": "R-06", "language": "fr", "domain": "security",    "query": "mot de passe SMTP pas accessible wrapper",          "expected_category": "credential_file_location" },
+    { "id": "R-07", "language": "en", "domain": "security",    "query": "user input HTML template without escaping",         "expected_category": "xss_template_injection" },
+    { "id": "R-08", "language": "fr", "domain": "security",    "query": "tokens API visibles code source git",               "expected_category": "hardcoded_secrets_exposure" },
+    { "id": "R-09", "language": "en", "domain": "nodejs",      "query": "Express middleware order auth rate limiter",        "expected_category": "middleware_ordering" },
+    { "id": "R-10", "language": "en", "domain": "nodejs",      "query": "async returns undefined database drops",            "expected_category": "unhandled_promise_db_failure" },
+    { "id": "R-11", "language": "fr", "domain": "nodejs",      "query": "API Node appels exterieurs sans verifier SSL",      "expected_category": "ssl_certificate_validation_disabled" },
+    { "id": "R-12", "language": "fr", "domain": "database",    "query": "requete SQL doublons JOIN mal fait",                "expected_category": "sql_join_duplicate_rows" },
+    { "id": "R-13", "language": "en", "domain": "database",    "query": "database migration dropped column referenced",      "expected_category": "schema_migration_column_drop" },
+    { "id": "R-14", "language": "fr", "domain": "devops",      "query": "deploiement sans healthcheck desordre",             "expected_category": "service_startup_order_healthcheck" },
+    { "id": "R-15", "language": "en", "domain": "devops",      "query": "Docker gateway too long to start",                  "expected_category": "slow_container_startup_delay" },
+    { "id": "R-16", "language": "fr", "domain": "fitness",     "query": "progresser squat bloque 100kg",                     "expected_category": "squat_plateau_programming" },
+    { "id": "R-17", "language": "fr", "domain": "fitness",     "query": "programme hypertrophy upper lower 4 jours",         "expected_category": "hypertrophy_training_split" },
+    { "id": "R-18", "language": "en", "domain": "writing",     "query": "blog article paragraphs too long SEO",              "expected_category": "paragraph_structure_seo_writing" },
+    { "id": "R-19", "language": "fr", "domain": "tts",         "query": "texte synthetise artefacts sauts bizarres",         "expected_category": "tts_artifact_audio_glitch" },
+    { "id": "R-20", "language": "fr", "domain": "writing",     "query": "traduction FR robotique repete formules",           "expected_category": "translation_quality_repetitive_phrasing" }
+  ]
+}

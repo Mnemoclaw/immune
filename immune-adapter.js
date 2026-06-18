@@ -62,7 +62,7 @@ function ensureLockFile() {
 function getMigrationState() {
   let state = readJSON(MIGRATION_FILE);
   if (!state) {
-    state = { version: '5.0.0', phase: 1, started: today(), sessions_in_phase: 0,
+    state = { version: '5.1.0', phase: 1, started: today(), sessions_in_phase: 0,
               sessions_required: 10, parity_passed: 0, last_parity: null,
               frozen: false, frozen_since: null, total_frozen_days: 0 };
     writeJSON(MIGRATION_FILE, state);
@@ -238,13 +238,27 @@ async function rerankItems(items, query, domains, limit, type) {
   return result;
 }
 
+// Escape a single FTS4 token by: (1) stripping FTS4 special chars, (2) doubling internal quotes,
+// (3) wrapping in double quotes so the result is always treated as a literal phrase.
+// Defends against user-controlled patterns leaking wildcards/operators into MATCH syntax.
+function ftsEscapeTerm(term) {
+  const cleaned = term.replace(/["^()*]/g, ''); // strip FTS4 metacharacters
+  if (!cleaned) return null;
+  return `"${cleaned.replace(/"/g, '""')}"`;
+}
+
+function ftsBuildQuery(query) {
+  const terms = [...tokenize(query)].filter(t => t.length >= 2);
+  const escaped = terms.map(ftsEscapeTerm).filter(Boolean);
+  return escaped.length ? escaped.join(' OR ') : null;
+}
+
 async function getFTSCandidates(query, domains, type, limit) {
   const db = await getDB();
   const sourceType = type === 'antibody' ? 'antibody' : 'strategy';
 
-  // OR-expand query for broader recall
-  const terms = [...tokenize(query)];
-  const ftsQuery = terms.join(' OR ');
+  const ftsQuery = ftsBuildQuery(query);
+  if (!ftsQuery) return new Set();
 
   const sql = `SELECT source_id FROM chunks_fts WHERE chunks_fts MATCH ? AND source_type = ? LIMIT ?`;
   const stmt = db.prepare(sql);
@@ -674,9 +688,13 @@ async function fts4Search(query, type, limit) {
     saveDB(db);
   }
 
+  // Quote each token to neutralize FTS4 special syntax (* " ( ) : AND OR NOT NEAR ^)
+  const safeQuery = ftsBuildQuery(query);
+  if (!safeQuery) return [];
+
   let sql = `SELECT source_type, source_id, snippet(chunks_fts, '>>>', '<<<', '...') as snippet
              FROM chunks_fts WHERE chunks_fts MATCH ?`;
-  const params = [query];
+  const params = [safeQuery];
 
   if (type !== 'all') {
     sql += ` AND source_type = ?`;
@@ -863,13 +881,15 @@ async function cmdGetContext(args) {
   const days = parseInt(args.days) || 90;
   const limit = parseInt(args.limit) || 5;
 
-  // FTS4 search on sessions
+  // FTS4 search on sessions (escape query tokens)
   const db = await getDB();
   const cutoff = new Date(Date.now() - days * 86400000).toISOString().slice(0, 10);
+  const safeSessionQuery = ftsBuildQuery(query);
+  if (!safeSessionQuery) return { count: 0, results: [], recent_logs: [], engine: 'fts4' };
   let sql = `SELECT source_type, source_id, snippet(chunks_fts, '>>>', '<<<', '...') as snippet
              FROM chunks_fts WHERE chunks_fts MATCH ? AND source_type = 'session' LIMIT ?`;
   const stmt = db.prepare(sql);
-  stmt.bind([query, limit]);
+  stmt.bind([safeSessionQuery, limit]);
   const results = [];
   while (stmt.step()) {
     const row = stmt.getAsObject();

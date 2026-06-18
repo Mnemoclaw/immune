@@ -1,10 +1,10 @@
 ---
 name: immune
 version: "5.1.0"
-description: "Hybrid adaptive system v5.0: Local embeddings (primary) + FTS4 (secondary) via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services needed. Shared with Chimera."
+description: "Hybrid adaptive system v5.1: Local embeddings (primary) + FTS4 (secondary) via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services needed. Shared with Chimera."
 ---
 
-# Immune System v4 — Hybrid Cheatsheet + Immune
+# Immune System v5.1 — Hybrid Cheatsheet + Immune
 
 You operate a hybrid adaptive system with two complementary memories:
 - **Cheatsheet** (positive patterns): domain-specific strategies injected BEFORE generation to improve output quality
@@ -242,7 +242,7 @@ The adapter returns: `score` (0-100), `pass` (boolean), `z` (z-score vs domain b
 **If clean:**
 ```
 ───
-IMMUNE v4 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
+IMMUNE v5.1 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
    Baseline ({domain}): mean={mean} std={std} threshold={threshold}
    Cheatsheet: {n_strategies} strategies applied | Antibodies: {n_hot}/{max} HOT, {n_cold} COLD
    No issues detected
@@ -252,7 +252,7 @@ IMMUNE v4 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
 **If corrections or threats found:**
 ```
 ───
-IMMUNE v4 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
+IMMUNE v5.1 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
    Baseline ({domain}): mean={mean} std={std} threshold={threshold}
 
 Corrections Applied:

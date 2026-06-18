@@ -1,4 +1,4 @@
-# Immune v5.0 — Benchmarks
+# Immune v5.1 — Benchmarks
 
 Three benchmarks measuring the hybrid adaptive memory system, using **test cases written by independent AI agents that never saw the immune memory data**.
 
@@ -159,7 +159,7 @@ These are exactly the cases where a **code-aware LLM** (the scan agent) compleme
 
 ## Comparison with Competitors
 
-| Metric | Immune v5.0 | Reflexion | MemGPT | Self-RAG |
+| Metric | Immune v5.1 | Reflexion | MemGPT | Self-RAG |
 |--------|-------------|-----------|--------|----------|
 | **Retrieval accuracy** | 70% (blind) | N/A | N/A | N/A |
 | **Generalization** | 53% (blind) | Not tested | Not tested | Not tested |
