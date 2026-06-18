@@ -1,5 +1,5 @@
 # ============================================================
-# Immune System — Configuration v5.0.0
+# Immune System — Configuration v5.1.0
 # ============================================================
 # Hybrid adaptive system: Cheatsheet (positive) + Immune (negative)
 # Search: Local embeddings (primary) + SQLite FTS4 (secondary), fused via RRF
@@ -10,10 +10,12 @@
 immune:
   version: "5.1.0"
   # Model used for immune scanning (cheap/fast model recommended).
-  # Claude Code resolves model names via env vars:
-  #   ANTHROPIC_DEFAULT_HAIKU_MODEL — the fast/cheap tier
-  #   ANTHROPIC_DEFAULT_SONNET_MODEL — the balanced tier
-  # Works with any Anthropic-compatible endpoint (set ANTHROPIC_BASE_URL).
+  # "haiku" is a logical alias resolved by Claude Code via env vars:
+  #   ANTHROPIC_DEFAULT_HAIKU_MODEL  — set to your provider's fast/cheap model
+  #   ANTHROPIC_DEFAULT_SONNET_MODEL — the balanced tier (used by /immune full mode)
+  #   ANTHROPIC_BASE_URL             — point at any Messages-API-compatible endpoint
+  # Works with: Anthropic, OpenRouter, Mistral, GLM, Ollama, llama.cpp, vLLM, LM Studio, etc.
+  # Only the *scan* step calls a model. Search, dedup, injection, scoring are fully local.
   scan_model: "haiku"
   memory_path: "immune_memory.json"
   cheatsheet_path: "cheatsheet_memory.json"
@@ -70,7 +72,7 @@ domain_keywords:
   travel: ["voyage", "travel", "viaje", "plage", "beach", "hôtel", "hotel", "tourisme", "tourism", "itinéraire", "budget", "sécurité", "safety", "transport", "visa", "El Salvador", "destination", "guide"]
 
 # ============================================================
-# v4.0 — Adapter + SQLite + Migration
+# Adapter + SQLite + Migration
 # ============================================================
 
 adapter:
@@ -93,7 +95,7 @@ sanitizer:
   enabled: true
 
 # ============================================================
-# v4.1 — ContextMemory + Score + Flush
+# ContextMemory + Score + Flush
 # ============================================================
 
 context_memory:

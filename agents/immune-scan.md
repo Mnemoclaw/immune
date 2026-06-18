@@ -1,8 +1,11 @@
 ---
 name: immune-scan
 model: haiku
-# "haiku" is resolved by Claude Code via ANTHROPIC_DEFAULT_HAIKU_MODEL env var.
-# Set it to your provider's fast/cheap model (e.g. glm-4.5-air, gpt-4o-mini, etc.)
+# "haiku" is a logical alias resolved by Claude Code via env vars:
+#   ANTHROPIC_DEFAULT_HAIKU_MODEL — set to your provider's fast/cheap model
+#   ANTHROPIC_BASE_URL           — point at any Messages-API-compatible endpoint
+# Works with: Anthropic, OpenRouter, Mistral, GLM, Ollama, llama.cpp, vLLM, etc.
+# Examples: claude-haiku-4-5, mistralai/ministral-8b, qwen2.5:7b, glm-4.5-air, gpt-4o-mini
 tools: []
 ---
 

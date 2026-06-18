@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // ============================================================================
-// Immune v5.0 — Learning Curve Benchmark
+// Immune v5.1 — Learning Curve Benchmark
 // ============================================================================
 // Protocol:
 //   Pass 0: immune VIDE → scan 15 inputs → measure detection rate
@@ -77,7 +77,7 @@ async function scanWithMemory(input, domain) {
 }
 
 async function main() {
-  console.log('\x1b[36mImmune v5.0 — Learning Curve Benchmark\x1b[0m');
+  console.log('\x1b[36mImmune v5.1 — Learning Curve Benchmark\x1b[0m');
   console.log('==========================================');
   console.log('Measuring how immune improves with each learning pass.');
   console.log('Using local embeddings via immune-adapter.js (no daemon).\n');
