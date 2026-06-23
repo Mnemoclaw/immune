@@ -19,10 +19,11 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           registry-url: "https://registry.npmjs.org"
 
-      - name: Verify tag matches package version
+      - name: Verify tag matches package version (tag triggers only)
+        if: startsWith(github.ref, 'refs/tags/')
         run: |
           PKG_VER="v$(node -p "require('./package.json').version")"
           TAG_VER="${GITHUB_REF#refs/tags/}"
