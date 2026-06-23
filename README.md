@@ -1,4 +1,4 @@
-# Immune System v5.1.0 — Hybrid Adaptive Memory for AI Agents
+# Immune System v5.2.0 — Hybrid Adaptive Memory for AI Agents
 
 [![Stars](https://img.shields.io/github/stars/Mnemoclaw/immune?style=social)](https://github.com/Mnemoclaw/immune)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -8,7 +8,7 @@ A self-improving memory system that makes AI outputs better over time through tw
 - **Immune (antibodies)** — Detects and prevents known errors (negative patterns)
 - **Cheatsheet (strategies)** — Injects proven best practices before generation (positive patterns)
 
-**v5.1 — Hybrid Search:** Local embeddings (bi-encoder) + FTS4 keyword search, fused via Reciprocal Rank Fusion (RRF). Everything runs in-process via WASM — no server, no daemon, no API keys for search/dedup.
+**v5.2 — Hybrid Search:** Local embeddings (bi-encoder) + FTS4 keyword search, fused via Reciprocal Rank Fusion (RRF). Everything runs in-process via WASM — no server, no daemon, no API keys for search/dedup.
 
 > **Provider-agnostic:** Built around the Anthropic Messages API shape (originally for [Claude Code](https://claude.ai/code)), but compatible with **any provider** that exposes a Messages-API-compatible endpoint. Set `ANTHROPIC_BASE_URL` to point at your provider (OpenRouter, Mistral, local llama.cpp, Ollama, vLLM, LM Studio, etc.) and `ANTHROPIC_DEFAULT_HAIKU_MODEL` to your provider's fast/cheap model. See **Provider Configuration** below.
 
@@ -18,7 +18,7 @@ A self-improving memory system that makes AI outputs better over time through tw
 
 | Component | Minimum | Notes |
 |---|---|---|
-| **Node.js** | 18+ | Tested on 20.x and 22.x |
+| **Node.js** | 18+ | Tested on 20.x and 22.x. The installer refuses to run on older versions. |
 | **Disk** | ~70 MB | Dependencies (~50 MB) + embedding model (~22 MB, downloaded on first use) |
 | **RAM** | 256 MB free | Embedding model uses ~150 MB resident |
 | **API access** | Any Anthropic-compatible endpoint | Only needed for the *scan* step (LLM). Search/dedup/dedup/strategy injection work fully offline. |
@@ -34,31 +34,15 @@ A self-improving memory system that makes AI outputs better over time through tw
 ### 1. Install
 
 ```bash
-git clone https://github.com/Mnemoclaw/immune.git
-cd immune
-npm install
+npm install -g @mnemoclaw/immune
+immune init
 ```
 
-### 2. Copy only the runtime files to your Claude Code skills directory
+That's it — `immune init` copies the skill into `~/.claude/skills/immune/`, installs dependencies, and verifies the install. Re-run `immune init` after every `npm update` to upgrade in place (your memory is preserved).
 
-```bash
-mkdir -p ~/.claude/skills/immune
-cp immune-adapter.js immune-inject.js sanitizer.js config.yaml skill.md package.json \
-   ~/.claude/skills/immune/
-cp -r agents benchmark ~/.claude/skills/immune/
-cd ~/.claude/skills/immune/
-npm install --omit=dev
-```
+> No npm? Use [Manual install](#manual-install-alternative) below.
 
-> Avoid `cp -r *` — it copies `node_modules/`, dev artifacts, and lockfiles you don't need.
-
-### 3. Verify
-
-```bash
-node ~/.claude/skills/immune/immune-adapter.js stats
-```
-
-### 4. Use it
+### 2. Use it
 
 In Claude Code:
 
@@ -69,6 +53,30 @@ In Claude Code:
 ```
 
 First invocation will trigger the embedding model download (~22 MB, one-time).
+
+### Manual install (alternative)
+
+If you prefer git clone over npm, or want to hack on the source:
+
+```bash
+git clone https://github.com/Mnemoclaw/immune.git
+cd immune
+npm install
+```
+
+Then copy only the runtime files into your Claude Code skills directory:
+
+```bash
+mkdir -p ~/.claude/skills/immune
+cp immune-adapter.js immune-inject.js sanitizer.js config.yaml skill.md package.json \
+   ~/.claude/skills/immune/
+cp -r agents ~/.claude/skills/immune/
+cd ~/.claude/skills/immune/
+npm install --omit=dev
+node immune-adapter.js stats
+```
+
+> Avoid `cp -r *` — it copies `node_modules/`, dev artifacts, and lockfiles you don't need.
 
 ---
 
@@ -123,7 +131,7 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL=qwen2.5:14b
 
 ## Key Features
 
-### Hybrid Search (v5.1)
+### Hybrid Search (v5.2)
 1. **Embeddings** (primary) — `Xenova/all-MiniLM-L6-v2` (384 dims, ~22 MB, WASM) for semantic matching
 2. **FTS4** (secondary) — SQLite full-text search for keyword recall
 3. **RRF Fusion** — Reciprocal Rank Fusion (k=60, Cormack et al. SIGIR 2009) merges both engines using ranks, not raw scores
