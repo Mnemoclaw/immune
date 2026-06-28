@@ -28,4 +28,4 @@ The script reads from the current working directory:
 - `context/*.md` (optional)
 - `../memory/*.md` (Claude Code memory dir, optional)
 
-If the memory files don't exist yet, run `/immune` once first so the adapter creates them.
+Run `/immune` once first so the adapter creates the memory files (skipped automatically when they already exist).

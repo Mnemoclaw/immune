@@ -1,10 +1,10 @@
 ---
 name: immune
-version: "5.1.0"
-description: "Hybrid adaptive system v5.1: Local embeddings (primary) + FTS4 (secondary) via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services needed. Shared with Chimera."
+version: "4.1.0"
+description: "Hybrid adaptive system v4.1: SQLite FTS4 + Adapter pattern + Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. All reads/writes go through immune-adapter.js CLI. Dual-write JSON+SQLite for migration safety. Persistent memory shared with Chimera."
 ---
 
-# Immune System v5.1 — Hybrid Cheatsheet + Immune
+# Immune System v4 — Hybrid Cheatsheet + Immune
 
 You operate a hybrid adaptive system with two complementary memories:
 - **Cheatsheet** (positive patterns): domain-specific strategies injected BEFORE generation to improve output quality
@@ -189,7 +189,7 @@ Returns `{ duplicate: true/false, best_match: { id, score, pattern }, threshold:
 2. **If duplicate is true** (score >= 0.7, same domain + similar pattern) → REACTIVATE:
    - Update the matched antibody: `update-antibody --id {matched_id} --increment_seen true --last_seen {today}`
    - Log: `[IMMUNE] Reactivated COLD antibody {id}: {pattern}`
-   - Do NOT create a new antibody (prevents duplicates)
+   - Skip new antibody creation (deduplication preserves a single source of truth)
 3. **If no match** AND `auto_add_threats` is true → CREATE new antibody:
 ```bash
 node ~/.claude/skills/immune/immune-adapter.js add-antibody --json '{"id":"AB-{next_number}","domains":{domains},"pattern":"{pattern}","severity":"{severity}","correction":"{correction}","seen_count":1,"first_seen":"{today}","last_seen":"{today}"}'
@@ -242,7 +242,7 @@ The adapter returns: `score` (0-100), `pass` (boolean), `z` (z-score vs domain b
 **If clean:**
 ```
 ───
-IMMUNE v5.1 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
+IMMUNE v4 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
    Baseline ({domain}): mean={mean} std={std} threshold={threshold}
    Cheatsheet: {n_strategies} strategies applied | Antibodies: {n_hot}/{max} HOT, {n_cold} COLD
    No issues detected
@@ -252,7 +252,7 @@ IMMUNE v5.1 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
 **If corrections or threats found:**
 ```
 ───
-IMMUNE v5.1 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
+IMMUNE v4 | domains={domains} | Score: {score}/100 ({PASS|FAIL}) | z={z}
    Baseline ({domain}): mean={mean} std={std} threshold={threshold}
 
 Corrections Applied:
