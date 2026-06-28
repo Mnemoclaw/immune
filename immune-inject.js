@@ -3,8 +3,8 @@
 
 // immune-inject.js — Pre-generation strategy injection hook
 // Called by Claude Code UserPromptSubmit hook before every prompt.
-// Uses local keyword detection + file-based strategies.
-// Silent on any error (graceful degradation).
+// Reads prompt → detects domains → loads HOT strategies → outputs compact XML.
+// Zero external deps. Silent on any error (graceful degradation).
 
 const fs = require('fs');
 const path = require('path');
@@ -46,7 +46,7 @@ function parseDomainKeywords(configPath) {
           keywords[m[1]] = m[2].split(',').map(k => k.trim().replace(/"/g, '').replace(/'/g, '')).filter(Boolean);
         }
       } else if (inSection && /^\S/.test(line)) {
-        break;
+        break; // next section
       }
     }
     return keywords;
@@ -65,6 +65,7 @@ function detectDomains(prompt, domainKeywords) {
     if (domain === '_global') continue;
     let hits = 0;
     for (const kw of keywords) {
+      // Word boundary check — prevent "France" matching "API"
       const pattern = '\\b' + kw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b';
       if (new RegExp(pattern, 'i').test(lower)) hits++;
     }
@@ -83,6 +84,8 @@ function detectDomains(prompt, domainKeywords) {
     domains.push(sorted[0][0]);
   }
 
+  // Only include _global if a specific domain was detected
+  // (avoids noise on unrelated prompts like "What is the capital of France?")
   if (domains.length > 0) {
     domains.push('_global');
   }
@@ -90,7 +93,7 @@ function detectDomains(prompt, domainKeywords) {
   return [...new Set(domains)];
 }
 
-// ── Strategy loading (file-based) ────────────────────────
+// ── Strategy loading ─────────────────────────────────────
 
 function loadHotStrategies(jsonPath, domains) {
   try {
@@ -126,15 +129,16 @@ function formatCompact(strategies) {
 
 // ── Main ─────────────────────────────────────────────────
 
-(async () => { try {
+try {
+  // Read stdin (hook passes JSON with prompt field)
   let input = '';
 
-  // Read stdin — on Windows/Git Bash, isTTY can be unreliable with pipes
-  try {
-    input = fs.readFileSync(0, 'utf8').trim();
-  } catch {
+  if (process.stdin.isTTY) {
+    // No piped input — nothing to do
     process.exit(0);
   }
+
+  input = fs.readFileSync(0, 'utf8').trim(); // fd 0 = stdin, works on Windows
 
   if (!input) process.exit(0);
 
@@ -143,6 +147,7 @@ function formatCompact(strategies) {
     const parsed = JSON.parse(input);
     promptText = parsed.prompt || parsed.message || '';
   } catch {
+    // Not JSON — treat raw text as prompt
     promptText = input;
   }
 
@@ -152,11 +157,13 @@ function formatCompact(strategies) {
   try {
     const { sanitize } = require('./sanitizer');
     promptText = sanitize(promptText);
-  } catch {}
+  } catch { /* no sanitizer, continue raw */ }
 
-  // Local keyword detection + file-based strategies
+  // Detect domains
   const domainKeywords = parseDomainKeywords(CONFIG_PATH);
   const domains = detectDomains(promptText, domainKeywords);
+
+  // Load strategies
   const strategies = loadHotStrategies(CHEATSHEET_PATH, domains);
 
   // Output
@@ -165,5 +172,8 @@ function formatCompact(strategies) {
     process.stdout.write(output + '\n');
   }
 } catch (err) {
+  // Silent degradation — preserve Claude's flow at all times
   if (process.env.IMMUNE_DEBUG) process.stderr.write('immune-inject: ' + err.message + '\n');
-} })();
+}
+
+process.exit(0);

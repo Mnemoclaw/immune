@@ -76,7 +76,7 @@ npm install --omit=dev
 node immune-adapter.js stats
 ```
 
-> Avoid `cp -r *` — it copies `node_modules/`, dev artifacts, and lockfiles you don't need.
+> Prefer a filtered copy over `cp -r *` — `cp -r *` copies `node_modules/`, dev artifacts, and lockfiles alongside the files you actually need.
 
 ---
 
@@ -108,9 +108,9 @@ export ANTHROPIC_DEFAULT_HAIKU_MODEL=qwen2.5:7b
 export ANTHROPIC_DEFAULT_SONNET_MODEL=qwen2.5:14b
 ```
 
-**GLM / Mistral / Together / Fireworks / Groq / DeepSeek** — same pattern. The system never hardcodes a vendor.
+**GLM / Mistral / Together / Fireworks / Groq / DeepSeek** — same pattern. The system keeps every vendor configurable.
 
-> Without these variables, the *scan* step will fail. Search, dedup, strategy injection, and scoring all keep working — they don't touch any model.
+> Without these variables, the *scan* step will fail. Search, dedup, strategy injection, and scoring all keep working — they operate independently of any model.
 
 ---
 
@@ -270,7 +270,7 @@ Patterns are tagged with domains for targeted retrieval. Edit `config.yaml:domai
 
 ## Benchmarks
 
-See [`benchmark/BENCHMARKS.md`](benchmark/BENCHMARKS.md) for the full methodology. Headline results (blind test cases written by independent AI agents that never saw the memory data):
+See [`benchmark/BENCHMARKS.md`](benchmark/BENCHMARKS.md) for the full methodology. Headline results (blind test cases written by independent AI agents kept fully blind to the memory data):
 
 | Benchmark | Score |
 |---|---|

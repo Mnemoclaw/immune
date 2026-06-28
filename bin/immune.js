@@ -13,7 +13,7 @@ const VERSION = PKG.version;
 const MIN_NODE_MAJOR = 18;
 
 // Files/dirs shipped by the npm package that must be copied into the skill dir.
-// Anything user-generated is intentionally absent here — we never touch it.
+// Anything user-generated stays out of this list — user data remains entirely user-owned.
 const RUNTIME_FILES = [
   "immune-adapter.js",
   "immune-inject.js",

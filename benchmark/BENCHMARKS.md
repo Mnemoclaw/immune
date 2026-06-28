@@ -1,6 +1,6 @@
 # Immune v5.1 — Benchmarks
 
-Three benchmarks measuring the hybrid adaptive memory system, using **test cases written by independent AI agents that never saw the immune memory data**.
+Three benchmarks measuring the hybrid adaptive memory system, using **test cases written by independent AI agents kept fully blind to the immune memory data**.
 
 ## Test Environment
 
@@ -26,7 +26,7 @@ Three benchmarks measuring the hybrid adaptive memory system, using **test cases
 **Question**: Can immune find the right pattern when queried with natural language?
 
 ### Methodology
-20 test queries written by an independent AI agent that had **never seen the immune memory data**. Queries span Docker, security, Node.js, database, DevOps, fitness, writing, and TTS. Mix of English and French. Evaluation uses semantic category matching — not specific pattern IDs.
+20 test queries written by an independent AI agent **kept fully blind to the immune memory data**. Queries span Docker, security, Node.js, database, DevOps, fitness, writing, and TTS. Mix of English and French. Evaluation uses semantic category matching rather than specific pattern IDs.
 
 ### Results: 70% (14/20)
 
@@ -54,9 +54,9 @@ Three benchmarks measuring the hybrid adaptive memory system, using **test cases
 | traduction FR robotique repete formules | writing | fr | 0.44 | MISS |
 
 ### What this proves
-- **70% honest retrieval** on queries the system has never seen, from an external evaluator
+- **70% honest retrieval** on novel queries encountered for the first time, from an external evaluator
 - **Cross-language works**: French queries reliably find English/mixed-language patterns
-- **The 30% gap is real**: Some concepts simply don't exist in memory, or the phrasing gap is too wide for embeddings alone
+- **The 30% gap is real**: Some concepts remain absent from memory, or the phrasing gap is too wide for embeddings alone
 - **Security domain strongest** (100% hit rate): Vulnerability patterns are well-represented and semantically distinct
 
 ---

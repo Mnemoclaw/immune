@@ -142,7 +142,7 @@ housekeeping:
   # Archive criteria (ALL must be true to archive):
   #   - COLD (not HOT)
   #   - severity != critical (antibodies) OR effectiveness < 0.3 (strategies)
-  #   - seen_count <= 1 (never proved useful)
+  #   - seen_count <= 1 (rarely actionable)
   #   - last_seen > 180 days ago
   # Archived items go to archived_antibodies.json / archived_strategies.json
   archive_after_days: 180
