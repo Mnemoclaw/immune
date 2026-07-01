@@ -1,7 +1,7 @@
 ---
 name: immune
-version: "4.1.0"
-description: "Hybrid adaptive system v4.1: SQLite FTS4 + Adapter pattern + Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. All reads/writes go through immune-adapter.js CLI. Dual-write JSON+SQLite for migration safety. Persistent memory shared with Chimera."
+version: "5.2.1"
+description: "Hybrid adaptive system v5.2.1: Local embeddings (primary) + FTS4 (secondary) via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services needed. Shared with Chimera."
 ---
 
 # Immune System v4 — Hybrid Cheatsheet + Immune
@@ -43,6 +43,12 @@ The user invokes with content to scan. Parse these parameters:
 </examples>
 
 If no inline text is provided, scan the last substantive output in the conversation.
+
+**Shortcuts:**
+- `/immune scan` → Full conversation scan in `mode=full`. Extracts BOTH new threats (antibodies) AND new good practices (strategies). Domains auto-detected. This is the standard "make this conversation teach the system" command.
+- `/immune` (bare) → Same as `scan` if there is conversation context; otherwise scans the last output only.
+
+Whenever the user invokes `/immune scan` or just says "scan la conversation" / "scan this conversation", default to extracting both threats AND strategies over the entire conversation history, in `mode=full`. Do not require the user to repeat "menaces + stratégies" — that is the default intent of `scan`.
 
 **Domain auto-detection:** Read `~/.claude/skills/immune/config.yaml` and match content against `domain_keywords`. If no strong match, use `["_global"]`. If single `domain` string provided, wrap in array: `domains = [domain]`.
 

@@ -1,5 +1,5 @@
 # ============================================================
-# Immune System — Configuration v5.1.0
+# Immune System — Configuration v5.2.1
 # ============================================================
 # Hybrid adaptive system: Cheatsheet (positive) + Immune (negative)
 # Search: Local embeddings (primary) + SQLite FTS4 (secondary), fused via RRF
@@ -8,7 +8,7 @@
 # ============================================================
 
 immune:
-  version: "5.1.0"
+  version: "5.2.1"
   # Model used for immune scanning (cheap/fast model recommended).
   # "haiku" is a logical alias resolved by Claude Code via env vars:
   #   ANTHROPIC_DEFAULT_HAIKU_MODEL  — set to your provider's fast/cheap model
@@ -142,7 +142,7 @@ housekeeping:
   # Archive criteria (ALL must be true to archive):
   #   - COLD (not HOT)
   #   - severity != critical (antibodies) OR effectiveness < 0.3 (strategies)
-  #   - seen_count <= 1 (rarely actionable)
+  #   - seen_count <= 1 (never proved useful)
   #   - last_seen > 180 days ago
   # Archived items go to archived_antibodies.json / archived_strategies.json
   archive_after_days: 180
