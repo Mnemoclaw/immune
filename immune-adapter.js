@@ -421,13 +421,19 @@ function rebuildFTS(db) {
 // ── Commands ────────────────────────────────────────────
 
 async function cmdGetAntibodies(args) {
-  const domains = JSON.parse(args.domains || '["_global"]');
+  // domains absent/vide → AUCUN filtre (retrieval large sur toute la mémoire).
+  // Anciennement défaut ['_global'] : rendait invisibles les items taggés avec
+  // des domains spécifiques auprès des appelants qui n'en passent pas.
+  // (même fix que embed-daemon/embed_server.py — garder les 2 moteurs cohérents)
+  const domains = args.domains ? JSON.parse(args.domains) : [];
   const tier = args.tier || 'hot';
   const limit = parseInt(args.limit) || 15;
   const query = args.query || null;
 
   const data = loadAntibodies();
-  let filtered = data.antibodies.filter(ab => domainMatch(ab.domains, domains));
+  let filtered = domains.length
+    ? data.antibodies.filter(ab => domainMatch(ab.domains, domains))
+    : data.antibodies;
 
   if (tier === 'hot') {
     filtered = filtered.filter(isHotAntibody);
@@ -468,13 +474,16 @@ async function cmdGetAntibodies(args) {
 }
 
 async function cmdGetStrategies(args) {
-  const domains = JSON.parse(args.domains || '["_global"]');
+  // domains absent/vide → AUCUN filtre (voir cmdGetAntibodies)
+  const domains = args.domains ? JSON.parse(args.domains) : [];
   const tier = args.tier || 'hot';
   const limit = parseInt(args.limit) || 15;
   const query = args.query || null;
 
   const data = loadStrategies();
-  let filtered = data.strategies.filter(cs => domainMatch(cs.domains, domains));
+  let filtered = domains.length
+    ? data.strategies.filter(cs => domainMatch(cs.domains, domains))
+    : data.strategies;
 
   if (tier === 'hot') {
     filtered = filtered.filter(isHotStrategy);

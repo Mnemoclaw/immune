@@ -25,6 +25,25 @@ A self-improving memory system that makes AI outputs better over time through tw
 
 **No GPU required.** Embeddings run on CPU via WASM. The first run downloads the model (~22 MB); subsequent runs use the cache.
 
+### Retrieval engines: CPU-only vs GPU
+
+This repo ships the **standalone CPU engine** (default). MnemoClaw full installs
+also run an **optional GPU daemon** that reads the *same* memory files — pick per
+deployment, nothing else changes:
+
+| | `immune-adapter.js` (this repo) | `embed-daemon` (mnemoclaw-docker) |
+|---|---|---|
+| Embedding model | `Xenova/all-MiniLM-L6-v2` (384 dims, ~22 MB) | `nvidia/Nemotron-3-Embed-1B` (2048 dims) |
+| Reranker | none (RRF + heat composite) | `BAAI/bge-reranker-v2-m3` cross-encoder |
+| Hardware | CPU / WASM, no GPU, ~150 MB RAM | CUDA GPU (~8 GB VRAM) |
+| Latency (583 items) | ~1-2 s | ~0.7-0.8 s warm (~5 s cold, fills cache) |
+| Best for | installs clients "petit frère", mnemo-lite, offline, CI | full MnemoClaw / MnemoPi on the dev station |
+
+Both engines read/write the same `immune_memory.json` / `cheatsheet_memory.json`
+and follow the same retrieval contract (domains absent → no filtering, tier
+hot/all/cold, RRF fusion, heat boost). Fixes are mirrored in both — keep them
+in sync when you touch retrieval logic.
+
 **No API key needed for retrieval.** Only the *scan* phase (where an LLM checks your output for known errors) calls a model. Everything else — embedding search, dedup, FTS4 keyword search, strategy injection, scoring, housekeeping — runs locally.
 
 ---
