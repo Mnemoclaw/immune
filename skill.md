@@ -1,7 +1,7 @@
 ---
 name: immune
-version: "5.2.1"
-description: "Hybrid adaptive system v5.2.1: Local embeddings (primary) + FTS4 (secondary) via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services needed. Shared with Chimera."
+version: "5.2.2"
+description: "Hybrid adaptive system v5.2.2: Local embeddings (primary) + FTS4 (secondary) via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services needed. Shared with Chimera."
 ---
 
 # Immune System v4 — Hybrid Cheatsheet + Immune

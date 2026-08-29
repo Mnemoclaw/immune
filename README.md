@@ -1,4 +1,4 @@
-# Immune System v5.2.0 — Hybrid Adaptive Memory for AI Agents
+# Immune System v5.2.2 — Hybrid Adaptive Memory for AI Agents
 
 [![Stars](https://img.shields.io/github/stars/Mnemoclaw/immune?style=social)](https://github.com/Mnemoclaw/immune)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -9,6 +9,8 @@ A self-improving memory system that makes AI outputs better over time through tw
 - **Cheatsheet (strategies)** — Injects proven best practices before generation (positive patterns)
 
 **v5.2 — Hybrid Search:** Local embeddings (bi-encoder) + FTS4 keyword search, fused via Reciprocal Rank Fusion (RRF). Everything runs in-process via WASM — no server, no daemon, no API keys for search/dedup.
+
+> **v5.2.2:** retrieval contract fix — `domains` absent or empty now means **no filtering** (previously defaulted to `_global`, hiding domain-tagged items from callers that pass no domains).
 
 > **Provider-agnostic:** Built around the Anthropic Messages API shape (originally for [Claude Code](https://claude.ai/code)), but compatible with **any provider** that exposes a Messages-API-compatible endpoint. Set `ANTHROPIC_BASE_URL` to point at your provider (OpenRouter, Mistral, local llama.cpp, Ollama, vLLM, LM Studio, etc.) and `ANTHROPIC_DEFAULT_HAIKU_MODEL` to your provider's fast/cheap model. See **Provider Configuration** below.
 

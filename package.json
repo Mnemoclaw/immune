@@ -1,6 +1,6 @@
 {
   "name": "@mnemoclaw/immune",
-  "version": "5.2.1",
+  "version": "5.2.2",
   "main": "immune-adapter.js",
   "bin": {
     "immune": "bin/immune.js"
