@@ -60,14 +60,19 @@ that is a normal mode, not a fallback. Once a process has used the daemon:
   warning on stderr. Results are never silently recomputed with a weaker
   model, so a Nemotron deployment never degrades to MiniLM behind your back.
 
-**Compatible daemon:** the MnemoClaw `embed-daemon` (`embed_server.py` or the
-Node `embed-daemon.js` in the mnemoclaw-docker stack). Protocol: `GET /health`,
-`POST /embed-batch`, `POST /rerank-immune`. Both daemon flavors serve the same
+**Compatible daemon:** the MnemoClaw `embed-daemon` (`embed_server.py` or a Node
+`embed-daemon.js` counterpart in a MnemoClaw stack). Protocol: `GET /health`,
+`POST /embed-batch` (with `role: 'query' | 'document'` — the bi-encoder is
+asymmetric), `POST /rerank-immune`. Both daemon flavors serve the same
 protocol; whichever is running wins.
 
 **Dedup + cache are engine-aware:** each engine has its own cosine threshold
-(0.70 MiniLM / 0.80 Nemotron — the daemon's 2048-dim scale needs its own
-tuning). Cache rows are tagged with the engine that produced them, so a 384-dim
+(0.70 MiniLM / 0.75 Nemotron — the daemon's 2048-dim document space needs its
+own tuning). On the daemon the cosine only *proposes* the 8 closest candidates:
+because the "same rule" and "different rule" cosine clusters overlap, the
+cross-encoder decides (CE >= 0.45), which removed every false positive in our
+measurements. Cache rows are tagged with the engine that produced them, so a
+384-dim
 vector is never compared against a 2048-dim one: a row is reused only if its
 engine tag matches the active engine. There is one row per item id, so switching
 engines (standalone ↔ daemon) re-embeds the items instead of mixing scales — that
