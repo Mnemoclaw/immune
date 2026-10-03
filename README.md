@@ -1,4 +1,4 @@
-# Immune System v5.2.2 — Hybrid Adaptive Memory for AI Agents
+# Immune System v5.3.0 — Hybrid Adaptive Memory for AI Agents
 
 [![Stars](https://img.shields.io/github/stars/Mnemoclaw/immune?style=social)](https://github.com/Mnemoclaw/immune)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -27,24 +27,59 @@ A self-improving memory system that makes AI outputs better over time through tw
 
 **No GPU required.** Embeddings run on CPU via WASM. The first run downloads the model (~22 MB); subsequent runs use the cache.
 
-### Retrieval engines: CPU-only vs GPU
+### Retrieval: standalone CPU engine, with an optional GPU daemon
 
-This repo ships the **standalone CPU engine** (default). MnemoClaw full installs
-also run an **optional GPU daemon** that reads the *same* memory files — pick per
-deployment, nothing else changes:
+This repo ships **one adapter, two engines, zero mandatory dependencies**.
+By default everything runs on CPU (WASM). If a compatible GPU daemon is
+reachable on the local network, the adapter uses it automatically — no config
+needed, no restart needed, silent fallback if it's gone:
 
-| | `immune-adapter.js` (this repo) | `embed-daemon` (mnemoclaw-docker) |
+| | Standalone (default) | + GPU daemon (auto-detected) |
 |---|---|---|
-| Embedding model | `Xenova/all-MiniLM-L6-v2` (384 dims, ~22 MB) | `nvidia/Nemotron-3-Embed-1B` (2048 dims) |
-| Reranker | none (RRF + heat composite) | `BAAI/bge-reranker-v2-m3` cross-encoder |
-| Hardware | CPU / WASM, no GPU, ~150 MB RAM | CUDA GPU (~8 GB VRAM) |
-| Latency (583 items) | ~1-2 s | ~0.7-0.8 s warm (~5 s cold, fills cache) |
-| Best for | installs clients "petit frère", mnemo-lite, offline, CI | full MnemoClaw / MnemoPi on the dev station |
+| Embedding model | `Xenova/all-MiniLM-L6-v2` (384 dims, ~22 MB) | `nvidia/Nemotron-3-Embed-1B` (2048 dims), pre-loaded |
+| Reranker | RRF + heat composite | + `BAAI/bge-reranker-v2-m3` cross-encoder on top candidates |
+| Hardware | CPU / WASM, no GPU, ~150 MB RAM | CUDA GPU (the MnemoClaw embed daemon, ~8 GB VRAM) |
+| Dedup threshold | 0.70 (MiniLM scale) | 0.80 (Nemotron scale, tuned in production 2026-07-17) |
+| Vector cache | sqlite, tagged `local` | sqlite, tagged `daemon` (never mixed with local vectors) |
+| Best for | clients "petit frère", mnemo-lite, offline, CI | full MnemoClaw on the dev station |
+
+**How it works:** on first use the adapter probes `GET /health` on
+`127.0.0.1:8091` (override with `EMBED_PORT`; disable with
+`IMMUNE_EMBED_DAEMON=off`). A healthy daemon is trusted for 30 s, a failed
+probe is remembered for 60 s — so a daemon that starts/stops during the
+process lifetime is picked up automatically.
+
+**The daemon is chosen for quality, so it is never silently downgraded.**
+Local MiniLM is the engine only in standalone mode (no daemon on that host) —
+that is a normal mode, not a fallback. Once a process has used the daemon:
+
+- a **slow** daemon is waited for (a cold Windows/WDDM GPU can take ~15 s to
+  restore its context; the daemon keep-alive normally prevents this),
+- a **failed** daemon disables the vector stage for that run — search falls
+  back to FTS4 + TF-IDF/trigrams and dedup to Jaccard, with one explicit
+  warning on stderr. Results are never silently recomputed with a weaker
+  model, so a Nemotron deployment never degrades to MiniLM behind your back.
+
+**Compatible daemon:** the MnemoClaw `embed-daemon` (`embed_server.py` or the
+Node `embed-daemon.js` in the mnemoclaw-docker stack). Protocol: `GET /health`,
+`POST /embed-batch`, `POST /rerank-immune`. Both daemon flavors serve the same
+protocol; whichever is running wins.
+
+**Dedup + cache are engine-aware:** each engine has its own cosine threshold
+(0.70 MiniLM / 0.80 Nemotron — the daemon's 2048-dim scale needs its own
+tuning). Cache rows are tagged with the engine that produced them, so a 384-dim
+vector is never compared against a 2048-dim one: a row is reused only if its
+engine tag matches the active engine. There is one row per item id, so switching
+engines (standalone ↔ daemon) re-embeds the items instead of mixing scales — that
+also means the cache self-heals from rows written before the tag existed.
 
 Both engines read/write the same `immune_memory.json` / `cheatsheet_memory.json`
 and follow the same retrieval contract (domains absent → no filtering, tier
-hot/all/cold, RRF fusion, heat boost). Fixes are mirrored in both — keep them
-in sync when you touch retrieval logic.
+hot/all/cold, RRF fusion, heat boost). One codebase, no fork — keep it that way.
+
+> ⚠️ **Nemotron is optional, never required.** Clients who install the npm
+> package get the standalone CPU engine and never download a GPU model. The
+> daemon is a pure acceleration/quality layer for full MnemoClaw deployments.
 
 **No API key needed for retrieval.** Only the *scan* phase (where an LLM checks your output for known errors) calls a model. Everything else — embedding search, dedup, FTS4 keyword search, strategy injection, scoring, housekeeping — runs locally.
 
@@ -140,7 +175,9 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL=qwen2.5:14b
 ```
 [User Request]
   --> Keyword domain detection (no LLM)
-  --> Hybrid search: local embeddings + FTS4 via Reciprocal Rank Fusion
+  --> Hybrid search: vector engine (GPU daemon if reachable, else local
+      embeddings) + FTS4 via Reciprocal Rank Fusion,
+      + cross-encoder re-ranking on top candidates (daemon only)
   --> Inject cheatsheet strategies (positive patterns) into prompt
   --> Generate output (with strategy context)
   --> Immune scan via cheap LLM (detect known + new errors)
@@ -152,11 +189,12 @@ export ANTHROPIC_DEFAULT_SONNET_MODEL=qwen2.5:14b
 
 ## Key Features
 
-### Hybrid Search (v5.2)
-1. **Embeddings** (primary) — `Xenova/all-MiniLM-L6-v2` (384 dims, ~22 MB, WASM) for semantic matching
+### Hybrid Search (v5.3)
+1. **Vector engine** (primary) — local `Xenova/all-MiniLM-L6-v2` (384 dims, ~22 MB, WASM) by default; automatically switches to an optional GPU daemon (Nemotron 2048 dims, batched) when one is reachable on `EMBED_PORT`
 2. **FTS4** (secondary) — SQLite full-text search for keyword recall
 3. **RRF Fusion** — Reciprocal Rank Fusion (k=60, Cormack et al. SIGIR 2009) merges both engines using ranks, not raw scores
-4. **TF-IDF + Trigrams** — Fallback when embeddings unavailable
+4. **Cross-encoder** (optional, daemon only) — `BAAI/bge-reranker-v2-m3` re-ranks the top 20 candidates (0.7 × ce + 0.3 × bi-encoder, same blend as the production pipeline)
+5. **TF-IDF + Trigrams** — Fallback when no vector engine is available
 
 ### Hot/Cold Tiering
 Keeps context lean for optimal performance:
@@ -240,7 +278,7 @@ Files generated at runtime (gitignored): `immune_memory.json`, `cheatsheet_memor
 ## CLI Commands
 
 ```bash
-# Search (hybrid embeddings + FTS4 via RRF)
+# Search (vector engine + FTS4 via RRF; cross-encoder when a daemon is up)
 node immune-adapter.js search --query "docker crash loop" --type antibody
 node immune-adapter.js get-context --query "domain programme" --days 90
 node immune-adapter.js check-duplicate --pattern "..." --type antibody
@@ -259,7 +297,8 @@ node immune-adapter.js import --file export.immune.json
 
 # Maintenance
 node immune-adapter.js index              # Rebuild FTS4 index
-node immune-adapter.js stats              # Show counts and migration state
+node immune-adapter.js stats              # Show counts, migration state + active vector engine
+node immune-adapter.js daemon-status      # Probe the optional GPU daemon (health, models, active engine)
 node immune-adapter.js housekeep          # Archive useless patterns
 node immune-adapter.js integrity-check    # SQLite integrity check
 node immune-adapter.js freeze / unfreeze  # Pause/resume aging clocks

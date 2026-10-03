@@ -1,14 +1,16 @@
 # ============================================================
-# Immune System — Configuration v5.2.1
+# Immune System — Configuration v5.3.0
 # ============================================================
 # Hybrid adaptive system: Cheatsheet (positive) + Immune (negative)
-# Search: Local embeddings (primary) + SQLite FTS4 (secondary), fused via RRF
+# Search: Vector engine (daemon fast path OR local embeddings, primary)
+#         + SQLite FTS4 (secondary), fused via RRF. Optional
+#         cross-encoder re-ranking when a daemon is reachable.
 # Adapter CLI: immune-adapter.js (standalone, no external services needed)
 # Can be used independently (/immune) or by Chimera.
 # ============================================================
 
 immune:
-  version: "5.2.1"
+  version: "5.3.0"
   # Model used for immune scanning (cheap/fast model recommended).
   # "haiku" is a logical alias resolved by Claude Code via env vars:
   #   ANTHROPIC_DEFAULT_HAIKU_MODEL  — set to your provider's fast/cheap model
@@ -79,6 +81,23 @@ adapter:
   script: "immune-adapter.js"
   db_path: "immune.sqlite"
 
+# ============================================================
+# Optional Embed Daemon (GPU acceleration — zero mandatory dependency)
+# ============================================================
+# If a compatible daemon is reachable, the adapter uses it as primary vector
+# source (batched bi-encoder, pre-loaded model) and adds a cross-encoder
+# re-ranking stage to search. No daemon → local MiniLM, silently (identical
+# bi-encoder model, so vectors and dedup thresholds stay compatible).
+#
+# Compatible daemon: MnemoClaw embed-daemon.js (see the MnemoClaw stack —
+# protocol: GET /health, POST /embed-batch, POST /rerank-immune).
+# Env overrides: EMBED_PORT (port), IMMUNE_EMBED_DAEMON=off|on (enabled).
+# Probe caching: a healthy daemon is trusted for 30s, a failed probe is
+# remembered for 60s (a daemon that comes up later is picked up automatically).
+embed_daemon:
+  enabled: "auto"      # auto (probe /health) | on | off
+  port: 8091           # daemon HTTP port (env EMBED_PORT wins)
+
 indexing:
   max_chunks: 2000
   chunk_size_tokens: 400
@@ -118,8 +137,12 @@ scoring:
 
 deduplication:
   engine: "auto"            # "auto" (embeddings if available, else jaccard) | "embeddings" | "jaccard"
-  model: "Xenova/all-MiniLM-L6-v2"   # Local embedding model (384 dims, ~22MB, WASM)
-  threshold_embedding: 0.7   # Cosine similarity threshold (natural gap: non-dup <0.56, dup >0.74)
+  model: "Xenova/all-MiniLM-L6-v2"   # Local bi-encoder (384 dims, ~22MB, WASM)
+  threshold_embedding: 0.70    # Local MiniLM cosine threshold (natural gap: non-dup <0.56, dup >0.74)
+  threshold_embedding_daemon: 0.80  # Daemon Nemotron (2048 dims) threshold — tuned in production
+                                     # (2026-07-17: true dup 0.802, near-miss 0.789). The adapter
+                                     # picks the threshold automatically from the active engine.
+                                     # If you point EMBED_PORT at a daemon with ANOTHER model, re-tune it.
   threshold_jaccard: 0.55    # Score threshold for Jaccard fallback
   weights:                   # Jaccard fallback weights
     jaccard: 0.5             # Word overlap (Jaccard index)

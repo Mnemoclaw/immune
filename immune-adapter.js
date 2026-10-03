@@ -26,9 +26,28 @@ const LIMITS = { max_antibodies: 500, max_strategies: 300, max_sqlite_mb: 50, ma
 // ── Deduplication Config ────────────────────────────────
 
 const DEDUP_THRESHOLD_JACCARD = 0.55;
-const DEDUP_THRESHOLD_EMBEDDING = 0.7;
+const DEDUP_THRESHOLD_EMBEDDING = 0.7;    // local MiniLM (384 dims): non-dup <0.56, dup >0.74
+// The optional daemon serves a DIFFERENT bi-encoder (Nemotron, 2048 dims) with its own
+// cosine scale — threshold tuned in production (2026-07-17: true dup 0.802, near-miss 0.789).
+const DEDUP_THRESHOLD_EMBEDDING_DAEMON = 0.80;
+
+function dedupThresholdForEngine(engine) {
+  return engine === 'daemon' ? DEDUP_THRESHOLD_EMBEDDING_DAEMON : DEDUP_THRESHOLD_EMBEDDING;
+}
 const DEDUP_WEIGHTS = { jaccard: 0.5, substring: 0.3, domain: 0.2 };
 const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
+
+// ── Optional embed daemon (zero-dependency fallback) ────────────────
+// If a compatible daemon (MnemoClaw embed daemon, embed_server.py) is
+// reachable on EMBED_PORT, embeddings are served by the daemon (pre-loaded
+// model, batched) and search gains a cross-encoder re-ranking stage. No
+// daemon → local MiniLM below, silently. The daemon serves a DIFFERENT
+// bi-encoder (Nemotron, 2048 dims) than local (MiniLM, 384 dims) — vectors
+// are never mixed: the sqlite cache is tagged per engine and dedup uses an
+// engine-specific threshold.
+const EMBED_DAEMON_PORT = parseInt(process.env.EMBED_PORT || '8091', 10);
+const CROSS_ENCODER_TOP = 20;       // top candidates sent to the cross-encoder
+const CROSS_ENCODER_ALPHA = 0.7;    // weight: cross-encoder score vs bi-encoder score
 
 const STOPWORDS = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be',
   'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
@@ -100,6 +119,86 @@ const RERANK_ALPHA = 0.6;           // weight: textual similarity vs heat
 const RERANK_MIN_SCORE = 0.08;      // minimum composite score to include
 const RERANK_FTS_CANDIDATES = 100;  // max candidates from FTS4 pre-filter
 
+// ── Embed Daemon Client (optional, zero-dependency) ────────────────
+// Compatible daemon protocol (MnemoClaw embed-daemon.js):
+//   GET  /health          → { ok, models: { biEncoder, crossEncoder } }
+//   POST /embed-batch     { texts: [...] }            → { vectors: [[...], ...] }
+//   POST /rerank-immune   { query, items, limit }    → { results: [{ index, score, raw, id }] }
+// All calls are best-effort: any failure degrades silently to the local engine.
+
+let _daemonState = null; // { ok, biEncoder, crossEncoder, ts }
+const DAEMON_OK_TTL = 30000;   // trust a successful /health for 30s
+const DAEMON_FAIL_TTL = 60000; // remember a failed probe for 60s
+
+function daemonConfigured() {
+  return process.env.IMMUNE_EMBED_DAEMON !== 'off'; // auto (default) | on | off
+}
+
+function daemonHttp(method, urlPath, body, timeoutMs) {
+  const http = require('http');
+  return new Promise((resolve, reject) => {
+    const data = body ? JSON.stringify(body) : null;
+    const req = http.request({
+      hostname: '127.0.0.1', port: EMBED_DAEMON_PORT, path: urlPath, method,
+      headers: data ? { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) } : {},
+      timeout: timeoutMs,
+    }, (res) => {
+      let buf = '';
+      res.on('data', (c) => { buf += c; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(buf)); } catch { reject(new Error('daemon: bad JSON response')); }
+      });
+    });
+    req.on('error', reject);
+    req.on('timeout', () => { req.destroy(); reject(new Error('daemon: timeout')); });
+    if (data) req.write(data);
+    req.end();
+  });
+}
+
+async function checkDaemon(force) {
+  if (!daemonConfigured()) return { ok: false, biEncoder: false, crossEncoder: false };
+  if (!force && _daemonState) {
+    const ttl = _daemonState.ok ? DAEMON_OK_TTL : DAEMON_FAIL_TTL;
+    if (Date.now() - _daemonState.ts < ttl) return _daemonState;
+  }
+  try {
+    const r = await daemonHttp('GET', '/health', null, 2000);
+    _daemonState = {
+      ok: !!r.ok,
+      biEncoder: !!(r.models && r.models.biEncoder),
+      crossEncoder: !!(r.models && r.models.crossEncoder),
+      ts: Date.now(),
+    };
+  } catch {
+    _daemonState = { ok: false, biEncoder: false, crossEncoder: false, ts: Date.now() };
+  }
+  return _daemonState;
+}
+
+async function daemonEmbedBatch(texts) {
+  const r = await daemonHttp('POST', '/embed-batch', { texts }, 30000);
+  if (!r || !Array.isArray(r.vectors) || r.vectors.length !== texts.length || r.vectors.some(v => !Array.isArray(v))) {
+    throw new Error('daemon: embed-batch response mismatch');
+  }
+  return r.vectors;
+}
+
+// Note (WDDM / Windows): the first CUDA call after GPU idle can take ~15 s
+// to restore the context (GeForce cards are put to sleep by the Windows
+// driver). The daemon keeps itself warm (keep-alive thread in
+// embed_server.py) so this is rare; when it happens we simply WAIT — the
+// result stays Nemotron-quality (no local MiniLM downgrade).
+async function daemonRerankImmune(query, items, limit) {
+  const r = await daemonHttp('POST', '/rerank-immune', {
+    query,
+    items: items.map(i => ({ id: i.id, pattern: i.pattern, correction: i.correction, example: i.example })),
+    limit,
+  }, 30000);
+  if (!r || !Array.isArray(r.results)) throw new Error('daemon: rerank-immune response mismatch');
+  return r.results;
+}
+
 let _dfTable = null;
 let _dfCorpusSize = 0;
 let _dfDirty = true; // rebuild on first use and after add/update
@@ -159,11 +258,73 @@ function heatScore(item) {
 async function rerankItems(items, query, domains, limit, type) {
   if (!query || items.length === 0) return items;
 
-  // Try embeddings first (universal semantic), fallback to TF-IDF + trigrams
-  await ensureTransformersInstalled();
+  // Normalize: items come raw from the JSON store (no .type field) — the
+  // vector cache is keyed by (id, type), so tag them before any lookup.
+  items = items.map(it => it.type ? it : { ...it, type: it._searchType || type });
+
+  // Fast path: optional embed daemon (batched bi-encoder + cross-encoder).
+  // Same pipeline as the MnemoClaw production daemon (same blending weights,
+  // same thresholds, same criticals guarantee). On daemon failure it degrades
+  // to the no-model path below (TF-IDF + trigrams) — never to a local MiniLM
+  // downgrade when the daemon was the chosen engine.
+  const engine = await resolveEmbedEngine();
+  if (engine === 'daemon') {
+    try {
+      const db = await getDB();
+      const itemTexts = items.map(i => i.pattern + ' ' + (i.correction || i.example || ''));
+      const queryEmb = await embedText(query);
+      if (!queryEmb) throw new Error('query embedding failed');
+      const vecs = await embedItems(db, items, itemTexts);
+
+      const scored = [];
+      for (let idx = 0; idx < items.length; idx++) {
+        const item = items[idx];
+        const itemEmb = vecs[idx];
+        const textSim = itemEmb ? Math.max(0, cosineSimilarity(queryEmb, itemEmb)) : 0;
+        const heat = heatScore(item);
+        const composite = RERANK_ALPHA * textSim + (1 - RERANK_ALPHA) * heat;
+        scored.push({ ...item, _score: { composite, textSim, heat, engine: 'embedding' } });
+      }
+      scored.sort((a, b) => b._score.composite - a._score.composite);
+
+      // Stage 3: cross-encoder re-ranking on top candidates
+      let finalScored = scored;
+      const d = await checkDaemon();
+      if (d.crossEncoder && scored.length > 1) {
+        const top = scored.slice(0, CROSS_ENCODER_TOP);
+        try {
+          const ceResults = await daemonRerankImmune(query, top, CROSS_ENCODER_TOP);
+          if (ceResults.length > 0) {
+            const ceMap = new Map(ceResults.map(r => [r.index, r]));
+            const ceScored = top.map((t, i) => {
+              const ce = ceMap.get(i);
+              if (!ce) return t;
+              const composite = CROSS_ENCODER_ALPHA * ce.score + (1 - CROSS_ENCODER_ALPHA) * t._score.composite;
+              return { ...t, _score: { ...t._score, composite, ceScore: ce.score, engine: 'cross-encoder' } };
+            });
+            const ceIds = new Set(ceScored.map(i => i.id));
+            finalScored = [...ceScored, ...scored.filter(i => !ceIds.has(i.id))];
+            finalScored.sort((a, b) => b._score.composite - a._score.composite);
+          }
+        } catch (e) {
+          process.stderr.write(`[IMMUNE] Cross-encoder unavailable: ${e.message}\n`);
+        }
+      }
+      return finalizeResults(finalScored, limit);
+    } catch (e) {
+      warnDaemonDead('rerank', e.message);
+    }
+  }
+
+  // No-model path: TF-IDF + trigrams.
+  // In standalone mode ('local') the in-process MiniLM embeddings are the
+  // engine for this process and are used as the primary signal. In daemon
+  // mode with the daemon down ('none') there is NO local MiniLM downgrade —
+  // TF-IDF + trigrams carry the ranking instead.
+  const engine2 = await resolveEmbedEngine();
   let queryEmbedding = null;
 
-  if (_embeddingsAvailable === true) {
+  if (engine2 === 'local' && _embeddingsAvailable === true) {
     queryEmbedding = await embedText(query);
   }
 
@@ -179,6 +340,7 @@ async function rerankItems(items, query, domains, limit, type) {
   const queryTrigrams = charTrigrams(query);
 
   // Score each candidate
+  const db = await getDB();
   const scored = [];
   for (const item of items) {
     const itemText = item.pattern + ' ' + (item.correction || item.example || '');
@@ -186,8 +348,9 @@ async function rerankItems(items, query, domains, limit, type) {
     let engine;
 
     if (queryEmbedding) {
-      // Embeddings available: use as primary similarity
-      const itemEmbedding = await embedText(itemText);
+      // Embeddings available: use as primary similarity (sqlite cache,
+      // tagged by engine — never mixed across engines)
+      const itemEmbedding = await getCachedEmbedding(db, item.id, item.type, itemText);
       if (itemEmbedding) {
         const embSim = cosineSimilarity(queryEmbedding, itemEmbedding);
         // Normalize: MiniLM cosine is typically 0-1, but can be negative
@@ -216,8 +379,14 @@ async function rerankItems(items, query, domains, limit, type) {
   // Sort ALL by composite score (criticals and non-criticals alike)
   scored.sort((a, b) => b._score.composite - a._score.composite);
 
+  return finalizeResults(scored, limit);
+}
+
+// Shared tail: threshold filter + criticals guarantee + diagnostics.
+// Identical to the MnemoClaw production finalizeResults.
+function finalizeResults(finalScored, limit) {
   // Apply minimum score threshold on non-criticals only
-  const aboveThreshold = scored.filter(i =>
+  const aboveThreshold = finalScored.filter(i =>
     i._score.composite >= RERANK_MIN_SCORE || i.severity === 'critical'
   );
 
@@ -233,7 +402,7 @@ async function rerankItems(items, query, domains, limit, type) {
   if (result.length > 0 && result[0]._score.composite < 0.1) {
     result._retrieval_warning = `Low relevance: best score ${result[0]._score.composite.toFixed(3)}`;
   }
-  result._engine = scored.length > 0 ? scored[0]._score.engine : 'none';
+  result._engine = finalScored.length > 0 ? finalScored[0]._score.engine : 'none';
 
   return result;
 }
@@ -355,11 +524,16 @@ function initSchema(db) {
       text, source_type, source_id, domains, tokenize=porter
     )`);
   } catch (e) {}
-  // Embeddings cache
+  // Embeddings cache (tagged by engine: local MiniLM 384-dim and daemon
+  // Nemotron 2048-dim vectors are NOT interchangeable)
   db.run(`CREATE TABLE IF NOT EXISTS embeddings (
     id TEXT PRIMARY KEY, type TEXT NOT NULL,
-    vector BLOB NOT NULL, pattern_hash TEXT NOT NULL
+    vector BLOB NOT NULL, pattern_hash TEXT NOT NULL,
+    model TEXT DEFAULT ''
   )`);
+  // Existing DBs: add the model column. Pre-existing rows get '' (unknown) →
+  // never reused, rewritten with the correct tag on next cache miss (self-healing).
+  try { db.exec(`ALTER TABLE embeddings ADD COLUMN model TEXT DEFAULT ''`); } catch {}
 }
 
 function saveDB(db) {
@@ -728,9 +902,9 @@ async function fts4Search(query, type, limit) {
 }
 
 async function embeddingSearch(query, type, limit) {
-  // Local embedding-based search using rerankItems
-  await ensureTransformersInstalled();
-  if (_embeddingsAvailable !== true) return [];
+  // Vector search: daemon fast path (batched + cross-encoder) or local MiniLM.
+  const engine = await resolveEmbedEngine();
+  if (engine === 'none') return [];
 
   const searchType = type === 'antibodies' ? 'antibody'
     : type === 'strategies' ? 'strategy'
@@ -739,33 +913,67 @@ async function embeddingSearch(query, type, limit) {
   let items = [];
   if (searchType === 'antibody' || searchType === 'all') {
     const abData = loadAntibodies();
-    items.push(...abData.antibodies.map(ab => ({ ...ab, _searchType: 'antibody' })));
+    items.push(...abData.antibodies.map(ab => ({ ...ab, type: 'antibody', _searchType: 'antibody' })));
   }
   if (searchType === 'strategy' || searchType === 'all') {
     const csData = loadStrategies();
-    items.push(...csData.strategies.map(cs => ({ ...cs, _searchType: 'strategy' })));
+    items.push(...csData.strategies.map(cs => ({ ...cs, type: 'strategy', _searchType: 'strategy' })));
   }
 
   if (items.length === 0) return [];
 
+  const texts = items.map(item => item.pattern + ' ' + (item.correction || item.example || ''));
   const queryEmbedding = await embedText(query);
   if (!queryEmbedding) return [];
+  const itemEmbeddings = await embedItems(await getDB(), items, texts);
+  if (!itemEmbeddings) return []; // vector stage off — FTS4 carries the search
 
   const scored = [];
-  for (const item of items) {
-    const itemText = item.pattern + ' ' + (item.correction || item.example || '');
-    const itemEmbedding = await embedText(itemText);
+  for (let idx = 0; idx < items.length; idx++) {
+    const itemEmbedding = itemEmbeddings[idx];
     if (!itemEmbedding) continue;
-    const score = cosineSimilarity(queryEmbedding, itemEmbedding);
-    scored.push({
-      id: `${item._searchType}:${item.id}`,
-      data: { source_type: item._searchType, source_id: item.id, snippet: itemText.slice(0, 200), score },
-      engine: 'embedding',
-    });
+    const score = Math.max(0, cosineSimilarity(queryEmbedding, itemEmbedding));
+    scored.push({ item: items[idx], _idx: idx, score });
+  }
+  scored.sort((a, b) => b.score - a.score);
+
+  // Stage 3: cross-encoder re-ranking on top candidates (daemon only)
+  let finalScored = scored;
+  let ceApplied = false;
+  if (engine === 'daemon' && scored.length > 1) {
+    const d = await checkDaemon();
+    if (d.crossEncoder) {
+      const top = scored.slice(0, CROSS_ENCODER_TOP);
+      try {
+        const ceResults = await daemonRerankImmune(query, top.map(t => t.item), CROSS_ENCODER_TOP);
+        if (ceResults.length > 0) {
+          const ceMap = new Map(ceResults.map(r => [r.index, r]));
+          finalScored = top
+            .map((t, i) => {
+              const ce = ceMap.get(i);
+              const score = ce ? CROSS_ENCODER_ALPHA * ce.score + (1 - CROSS_ENCODER_ALPHA) * t.score : t.score;
+              return { item: t.item, _idx: t._idx, score, ce: !!ce };
+            })
+            .concat(scored.slice(top.length))
+            .sort((a, b) => b.score - a.score);
+          ceApplied = true;
+        }
+      } catch (e) {
+        process.stderr.write(`[IMMUNE] Cross-encoder unavailable: ${e.message}\n`);
+      }
+    }
   }
 
-  scored.sort((a, b) => (b.data.score || 0) - (a.data.score || 0));
-  return scored.slice(0, limit);
+  return finalScored.slice(0, limit).map(s => ({
+    id: `${s.item._searchType}:${s.item.id}`,
+    data: {
+      source_type: s.item._searchType,
+      source_id: s.item.id,
+      snippet: texts[s._idx].slice(0, 200),
+      score: s.score,
+    },
+    engine: ceApplied && s.ce ? 'cross-encoder' : 'embedding',
+  }));
 }
 
 async function cmdSearch(args) {
@@ -793,7 +1001,7 @@ async function cmdSearch(args) {
         engines: [...new Set(f.engines)],
       })),
       engine: 'rrf',
-      engine_detail: { embedding: embResults.length, fts4: ftsResults.length },
+      engine_detail: { embedding: embResults.length, fts4: ftsResults.length, vector_source: await resolveEmbedEngine() },
     };
   }
 
@@ -803,6 +1011,7 @@ async function cmdSearch(args) {
     count: results.length,
     results: results.slice(0, limit).map(r => r.data),
     engine: embResults.length > 0 ? 'embedding' : 'fts4',
+    vector_source: embResults.length > 0 ? await resolveEmbedEngine() : undefined,
   };
 }
 
@@ -821,10 +1030,30 @@ async function cmdStats() {
   const abData = loadAntibodies();
   const csData = loadStrategies();
   const migration = getMigrationState();
+  const d = await checkDaemon();
   return {
     antibodies: { total: abData.antibodies.length, ...abData.stats },
     strategies: { total: csData.strategies.length, ...csData.stats },
+    embedding: {
+      engine: await resolveEmbedEngine(),
+      daemon: { port: EMBED_DAEMON_PORT, reachable: d.ok, cross_encoder: d.crossEncoder },
+    },
     migration
+  };
+}
+
+async function cmdDaemonStatus() {
+  const d = await checkDaemon(true);
+  const active = (d.ok && d.biEncoder) ? 'daemon' : ((await ensureTransformersInstalled()) ? 'local' : 'none');
+  return {
+    configured: daemonConfigured(),
+    port: EMBED_DAEMON_PORT,
+    reachable: d.ok,
+    models: { biEncoder: d.biEncoder, crossEncoder: d.crossEncoder },
+    active_engine: active,
+    note: d.ok
+      ? 'Daemon in use: batched Nemotron embeddings (2048 dims) + cross-encoder re-ranking. Engine-aware dedup threshold (0.80) and tagged vector cache — never mixed with local vectors.'
+      : 'No daemon: local MiniLM in-process (384 dims, dedup threshold 0.70). Zero extra dependencies required; falls back to TF-IDF/Jaccard if the model is unavailable.',
   };
 }
 
@@ -1182,11 +1411,98 @@ async function getEmbedder() {
   }
 }
 
-async function embedText(text) {
+async function embedTextLocal(text) {
   const embedder = await getEmbedder();
   if (!embedder) return null;
   const output = await embedder(text, { pooling: 'mean', normalize: true });
   return Array.from(output.data);
+}
+
+// ── Engine resolution: daemon fast path → local fallback ──────────
+// 'daemon' = compatible embed daemon reachable (pre-loaded model, batched,
+//            + cross-encoder re-ranking in search)
+// 'local'  = in-process transformers.js (MiniLM)
+// 'none'   = no vector engine (FTS4/TF-IDF/Jaccard only)
+// A down daemon is re-probed (negative TTL), so a daemon that comes up
+// during the process lifetime is picked up without a restart.
+let _embedEngine = null;
+let _embedEngineLocked = false;
+// Once the daemon has been the engine in this process, it was CHOSEN for its
+// model quality (Nemotron). A daemon failure must never silently downgrade to
+// local MiniLM — the vector stage is disabled instead (FTS/TF-IDF/Jaccard
+// still rank), and the daemon is re-probed (health) on the next call.
+let _daemonModeChosen = false;
+let _daemonDeadWarned = false;
+
+function warnDaemonDead(kind, msg) {
+  if (_daemonDeadWarned) return;
+  _daemonDeadWarned = true;
+  process.stderr.write(`[IMMUNE] Daemon ${kind} failed (${msg}) — vector stage disabled until the daemon is reachable again (no local MiniLM downgrade: the daemon was chosen for quality).\n`);
+}
+
+async function resolveEmbedEngine() {
+  if (_embedEngineLocked) return _embedEngine;
+  const d = await checkDaemon();
+  if (d.ok && d.biEncoder) {
+    _embedEngine = 'daemon';
+    _embedEngineLocked = true;
+    _daemonModeChosen = true;
+    process.stderr.write(`[IMMUNE] Embed daemon on 127.0.0.1:${EMBED_DAEMON_PORT} (cross-encoder: ${d.crossEncoder ? 'yes' : 'no'})\n`);
+    return _embedEngine;
+  }
+  // Daemon unavailable:
+  // - daemon mode (chosen for quality): no downgrade to local MiniLM — the
+  //   vector stage is off ('none'); re-probe on the next call so a daemon
+  //   that comes back is picked up.
+  // - standalone mode (daemon never available here): local MiniLM is THE
+  //   engine for this process, not a fallback.
+  if (_daemonModeChosen) {
+    _embedEngine = 'none';
+    return _embedEngine;
+  }
+  const localOk = await ensureTransformersInstalled();
+  _embedEngine = localOk ? 'local' : 'none';
+  if (!localOk) _embedEngineLocked = true; // nothing available → don't re-probe
+  return _embedEngine;
+}
+
+async function embedText(text) {
+  const engine = await resolveEmbedEngine();
+  if (engine === 'daemon') {
+    try {
+      // No cold-wake timeout: a slow daemon is still Nemotron (the chosen
+      // quality) — waiting is better than downgrading. The daemon keep-alive
+      // (embed_server.py) keeps the CUDA context warm in practice.
+      const vecs = await daemonEmbedBatch([text]);
+      return vecs[0];
+    } catch (e) {
+      warnDaemonDead('embed', e.message);
+      return null;
+    }
+  }
+  if (engine === 'none') return null;
+  return embedTextLocal(text);
+}
+
+// Returns: array of vectors (one per text) | null when the vector stage is
+// unavailable (daemon mode + daemon down → no quality downgrade to local).
+async function embedBatch(texts) {
+  if (texts.length === 0) return [];
+  const engine = await resolveEmbedEngine();
+  if (engine === 'daemon') {
+    try {
+      return await daemonEmbedBatch(texts);
+    } catch (e) {
+      warnDaemonDead('embed-batch', e.message);
+      return null;
+    }
+  }
+  if (engine === 'none') return null;
+  const ok = await ensureTransformersInstalled();
+  if (!ok) return texts.map(() => null);
+  const out = [];
+  for (const t of texts) out.push(await embedTextLocal(t));
+  return out;
 }
 
 function cosineSimilarity(a, b) {
@@ -1208,35 +1524,71 @@ function patternHash(text) {
   return h.toString(36);
 }
 
-async function getCachedEmbedding(db, id, type, pattern) {
+function modelTagForEngine() {
+  // Rows are tagged by engine: a vector computed by one engine (local MiniLM
+  // 384-dim vs daemon Nemotron 2048-dim) must never be compared against a
+  // query embedded by the other.
+  return _embedEngine === 'daemon' ? 'daemon' : 'local';
+}
+
+function readCachedEmbedding(db, id, type, pattern) {
   const hash = patternHash(pattern);
-  const stmt = db.prepare('SELECT vector, pattern_hash FROM embeddings WHERE id = ? AND type = ?');
+  const stmt = db.prepare('SELECT vector, pattern_hash, model FROM embeddings WHERE id = ? AND type = ?');
   stmt.bind([id, type]);
-  if (stmt.step()) {
-    const row = stmt.getAsObject();
-    stmt.free();
-    if (row.pattern_hash === hash) {
-      // Cache hit
-      const buf = new Float32Array(new Uint8Array(row.vector).buffer);
-      return Array.from(buf);
-    }
-  } else {
-    stmt.free();
+  let row = null;
+  if (stmt.step()) row = stmt.getAsObject();
+  stmt.free();
+  if (row && row.pattern_hash === hash && (row.model || '') === modelTagForEngine()) {
+    return Array.from(new Float32Array(new Uint8Array(row.vector).buffer));
   }
-  // Cache miss — compute and store
-  const vec = await embedText(pattern);
-  if (!vec) return null;
+  return null;
+}
+
+function storeCachedEmbedding(db, id, type, pattern, vec) {
+  if (!vec) return;
   const blob = Buffer.from(new Float32Array(vec).buffer);
-  db.run('INSERT OR REPLACE INTO embeddings (id, type, vector, pattern_hash) VALUES (?, ?, ?, ?)',
-    [id, type, blob, hash]);
+  db.run('INSERT OR REPLACE INTO embeddings (id, type, vector, pattern_hash, model) VALUES (?, ?, ?, ?, ?)',
+    [id, type, blob, patternHash(pattern), modelTagForEngine()]);
   saveDB(db);
-  return vec;
+}
+
+async function getCachedEmbedding(db, id, type, pattern) {
+  const cached = readCachedEmbedding(db, id, type, pattern);
+  if (cached) return cached;
+  const vec = await embedText(pattern);
+  storeCachedEmbedding(db, id, type, pattern, vec);
+  return vec || null;
+}
+
+// Embed all item texts, preferring the per-item sqlite cache (tagged by
+// engine), batch-fetching whatever is missing in ONE daemon call (or a local
+// loop), then persisting the new vectors. Warm cache → zero network.
+async function embedItems(db, items, texts) {
+  const vectors = new Array(items.length);
+  const missing = [];
+  for (let i = 0; i < items.length; i++) {
+    const v = readCachedEmbedding(db, items[i].id, items[i].type, texts[i]);
+    if (v) vectors[i] = v; else missing.push(i);
+  }
+  if (missing.length) {
+    const batch = await embedBatch(missing.map(i => texts[i]));
+    if (batch === null) return null; // vector stage off (daemon mode, daemon down)
+    missing.forEach((idx, k) => {
+      vectors[idx] = batch[k];
+      storeCachedEmbedding(db, items[idx].id, items[idx].type, texts[idx], batch[k]);
+    });
+  }
+  return vectors;
 }
 
 async function findBestDuplicateEmbeddings(pattern, domains, items, type) {
+  // Returns: { id, score, ... } on duplicate | null on clean no-duplicate
+  //          | { vectorsFailed: true } when no vector engine could run.
+  // (the sqlite vector cache is tagged per engine — daemon Nemotron and
+  //  local MiniLM vectors are never compared across engines)
   const db = await getDB();
   const newVec = await embedText(pattern);
-  if (!newVec) return null;
+  if (!newVec) return { vectorsFailed: true };
 
   let bestScore = 0;
   let bestItem = null;
@@ -1249,8 +1601,9 @@ async function findBestDuplicateEmbeddings(pattern, domains, items, type) {
       bestItem = item;
     }
   }
-  if (bestScore >= DEDUP_THRESHOLD_EMBEDDING) {
-    return { id: bestItem.id, score: Math.round(bestScore * 1000) / 1000, pattern: bestItem.pattern, engine: 'embedding' };
+  const threshold = dedupThresholdForEngine(await resolveEmbedEngine());
+  if (bestScore >= threshold) {
+    return { id: bestItem.id, score: Math.round(bestScore * 1000) / 1000, pattern: bestItem.pattern, engine: 'embedding', threshold };
   }
   return null;
 }
@@ -1331,14 +1684,14 @@ function findBestDuplicateJaccard(pattern, domains, items) {
 }
 
 async function findBestDuplicate(pattern, domains, items, type) {
-  // Try embeddings first (best quality)
-  if (_embeddingsAvailable !== false) {
+  // Try embeddings first (best quality) — daemon or local
+  const engine = await resolveEmbedEngine();
+  if (engine !== 'none') {
     const result = await findBestDuplicateEmbeddings(pattern, domains, items, type);
-    if (result) return result;
-    // If embeddings loaded but no match found, trust that result
-    if (_embeddingsAvailable === true) return null;
+    if (result === null) return null;                    // vectors OK, no duplicate → trust
+    if (result && !result.vectorsFailed) return result; // duplicate found
+    // vectorsFailed → fall through to Jaccard
   }
-  // Fallback to Jaccard
   return findBestDuplicateJaccard(pattern, domains, items);
 }
 
@@ -1502,15 +1855,16 @@ async function cmdCheckDuplicate(args) {
   const domains = JSON.parse(args.domains || '["_global"]');
   const type = args.type || 'antibody';
 
-  // Local embeddings + Jaccard
+  // Embeddings (daemon or local) + Jaccard
+  const engine = await resolveEmbedEngine();
   const items = type === 'antibody' ? loadAntibodies().antibodies : loadStrategies().strategies;
   const match = await findBestDuplicate(pattern, domains, items, type);
 
   return {
-    duplicate: !!match,
-    best_match: match || null,
-    engine: match ? match.engine : (_embeddingsAvailable ? 'embedding' : 'jaccard'),
-    thresholds: { embedding: DEDUP_THRESHOLD_EMBEDDING, jaccard: DEDUP_THRESHOLD_JACCARD },
+    duplicate: !!(match && !match.vectorsFailed),
+    best_match: (match && !match.vectorsFailed) ? match : null,
+    engine: match ? match.engine : (engine !== 'none' ? 'embedding' : 'jaccard'),
+    thresholds: { embedding: dedupThresholdForEngine(engine), jaccard: DEDUP_THRESHOLD_JACCARD },
     candidates_checked: items.length
   };
 }
@@ -1535,13 +1889,14 @@ async function cmdSimilarityTest() {
   }
 
   const embeddingResults = [];
+  const eThreshold = dedupThresholdForEngine(await resolveEmbedEngine());
   const embedder = await getEmbedder();
   if (embedder) {
     for (const t of tests) {
       const vecA = await embedText(t.a);
       const vecB = await embedText(t.b);
       const score = cosineSimilarity(vecA, vecB);
-      const isDup = score >= DEDUP_THRESHOLD_EMBEDDING;
+      const isDup = score >= eThreshold;
       const pass = (t.expect === 'dup' && isDup) || (t.expect === 'not-dup' && !isDup);
       embeddingResults.push({ a: t.a, b: t.b, score: Math.round(score * 1000) / 1000, isDup, expected: t.expect, pass: pass ? 'OK' : 'FAIL' });
     }
@@ -1549,11 +1904,20 @@ async function cmdSimilarityTest() {
 
   const jPassed = jaccardResults.filter(r => r.pass === 'OK').length;
   const ePassed = embeddingResults.length ? embeddingResults.filter(r => r.pass === 'OK').length : 'N/A';
+  const eEngine = await resolveEmbedEngine();
 
   return {
     jaccard: { tests: tests.length, passed: jPassed, failed: tests.length - jPassed, threshold: DEDUP_THRESHOLD_JACCARD, results: jaccardResults },
     embedding: embeddingResults.length
-      ? { tests: tests.length, passed: ePassed, failed: tests.length - ePassed, threshold: DEDUP_THRESHOLD_EMBEDDING, results: embeddingResults }
+      ? {
+          tests: tests.length, passed: ePassed, failed: tests.length - ePassed,
+          threshold: eThreshold, engine: eEngine,
+          // Expected values are calibrated for the local MiniLM model. On the
+          // daemon (Nemotron) the score distribution differs — use the
+          // production-tuned threshold (0.80) and near-miss discrimination.
+          note: eEngine === 'daemon' ? 'Running against the daemon engine (Nemotron); suite expectations are MiniLM-calibrated.' : undefined,
+          results: embeddingResults,
+        }
       : { available: false, reason: 'transformers not installed' }
   };
 }
@@ -1620,7 +1984,7 @@ async function cmdEmbed(args) {
   if (!text) return { error: 'Usage: embed --text "some text"' };
   const vec = await embedText(text);
   if (!vec) return { error: 'Embeddings unavailable', vector: null };
-  return { dims: vec.length, vector: vec };
+  return { dims: vec.length, engine: await resolveEmbedEngine(), vector: vec };
 }
 
 // ── CLI Router ──────────────────────────────────────────
@@ -1651,6 +2015,7 @@ const COMMANDS = {
   'search': cmdSearch,
   'index': cmdIndex,
   'stats': cmdStats,
+  'daemon-status': cmdDaemonStatus,
   'embed': cmdEmbed,
   'migrate-status': cmdMigrateStatus,
   'migrate-advance': cmdMigrateAdvance,
