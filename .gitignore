@@ -51,3 +51,6 @@ Thumbs.db
 # Ne doit JAMAIS etre versionne sur le depot public — il se regenere localement :
 #   node tools/viz/immune-viz.js
 tools/viz/immune-viz.html
+
+# Local expectation ids for the retrieval-test (points at YOUR memory)
+immune_test_ids.json

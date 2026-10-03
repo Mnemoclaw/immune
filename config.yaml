@@ -47,16 +47,9 @@ tiers:
 # Cheatsheet — positive patterns injected BEFORE generation
 cheatsheet:
   max_hot: 15
-  # Strategy ID prefix per domain (e.g., CS-DOMAIN-001)
-  id_prefix:
-    domain: "CS-DOMAIN"
-    code: "CS-CODE"
-    domain: "CS-DOC"
-    domain: "CS-DATA"
-    strategy: "CS-STRATEGY"
-    domain: "CS-UI"
-    _global: "CS-GLOBAL"
-    domain: "CS-MISC"
+  # Naming convention (documentation only — not read by the adapter):
+  # antibodies are AB-<DOMAIN>-<NNN>, strategies are CS-<DOMAIN>-<NNN>.
+  # Keep your own domain list in a local config so this file stays publishable.
   # Default effectiveness for new strategies (0.0-1.0)
   default_effectiveness: 0.5
   # Strategies below this effectiveness are candidates for removal

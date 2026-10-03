@@ -1994,26 +1994,40 @@ async function cmdSimilarityTest() {
 
 // ── Retrieval Quality Test ─────────────────────────────
 
-async function cmdRetrievalTest() {
+async function cmdRetrievalTest(args) {
   // Test: given a query, verify that expected patterns appear in top results
-  // These test semantic matching — queries use different words than the patterns
+  // These test semantic matching — queries use different words than the patterns.
+  //
+  // No personal ids live in this repo: `expect_contains` is null by default, so the
+  // test runs the full retrieval pipeline and just reports the top hits. To assert
+  // against YOUR OWN memory, drop an immune_test_ids.json (gitignored) next to the
+  // adapter, e.g. {"credentials": "AB-<DOMAIN>-001", "healthcheck": "CS-<DOMAIN>-002"}.
+  const overrides = (() => {
+    try {
+      const p = path.join(__dirname, 'immune_test_ids.json');
+      if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, 'utf-8'));
+    } catch { /* optional */ }
+    return {};
+  })();
+  const id = k => overrides[k] || null;
+
   const tests = [
-    { query: 'network security binding', domains: '["code"]', type: 'antibody',
-      expect_contains: 'AB-CODE-0NNN', desc: 'Should find OpenClaw port exposure via semantic match' },
-    { query: 'Docker container shell script fails', domains: '["code"]', type: 'antibody',
-      expect_contains: 'AB-CODE-0NNN', desc: 'Should find CRLF line ending issue' },
-    { query: 'credentials secret management', domains: '["code"]', type: 'antibody',
-      expect_contains: 'AB-CODE-0NNN', desc: 'Should find hardcoded credentials pattern' },
-    { query: 'protect sensitive service access', domains: '["code"]', type: 'strategy',
-      expect_contains: 'CS-CODE-0NN', desc: 'Should find loopback binding strategy' },
-    { query: 'monitoring health Docker services', domains: '["code"]', type: 'strategy',
-      expect_contains: 'CS-CODE-0NN', desc: 'Should find HTTP healthcheck strategy' },
-    { query: 'save money API costs', domains: '["code","strategy"]', type: 'strategy',
-      expect_contains: 'CS-STRATEGY-0NN', desc: 'Should find claude-cli backend strategy' },
-    { query: 'XSS injection template user data', domains: '["code"]', type: 'antibody',
-      expect_contains: 'AB-CODE-0NNN', desc: 'Should find server-side template XSS' },
-    { query: 'authentication before expensive operations', domains: '["code"]', type: 'strategy',
-      expect_contains: 'CS-CODE-0NN', desc: 'Should find auth-before-API-call strategy' },
+    { key: 'loopback', query: 'network security binding', domains: '["code"]', type: 'antibody',
+      expect_contains: id('loopback'), desc: 'Should find a port-binding antibody via semantic match' },
+    { key: 'lineendings', query: 'script file fails inside container', domains: '["code"]', type: 'antibody',
+      expect_contains: id('lineendings'), desc: 'Should find a line-ending antibody' },
+    { key: 'credentials', query: 'credentials secret management', domains: '["code"]', type: 'antibody',
+      expect_contains: id('credentials'), desc: 'Should find a hardcoded-credentials antibody' },
+    { key: 'loopbackStrategy', query: 'protect sensitive service access', domains: '["code"]', type: 'strategy',
+      expect_contains: id('loopbackStrategy'), desc: 'Should find a loopback-binding strategy' },
+    { key: 'healthcheck', query: 'monitoring health of services', domains: '["code"]', type: 'strategy',
+      expect_contains: id('healthcheck'), desc: 'Should find a health-check strategy' },
+    { key: 'cost', query: 'save money on API costs', domains: '["code","strategy"]', type: 'strategy',
+      expect_contains: id('cost'), desc: 'Should find a cost-control strategy' },
+    { key: 'xss', query: 'XSS injection template user data', domains: '["code"]', type: 'antibody',
+      expect_contains: id('xss'), desc: 'Should find a server-side escaping antibody' },
+    { key: 'auth', query: 'authentication before expensive operations', domains: '["code"]', type: 'strategy',
+      expect_contains: id('auth'), desc: 'Should find an auth-before-call strategy' },
   ];
 
   const results = [];
@@ -2025,22 +2039,29 @@ async function cmdRetrievalTest() {
     // Re-rank
     const ranked = await rerankItems(domainFiltered, t.query, domains, 15, t.type);
     const topIds = ranked.map(i => i.id);
-    const found = topIds.includes(t.expect_contains);
+    // No expectation configured (default): report the ranking without asserting.
+    const hasExpectation = !!t.expect_contains;
+    const found = hasExpectation && topIds.includes(t.expect_contains);
     const position = found ? topIds.indexOf(t.expect_contains) + 1 : -1;
     const topScore = ranked.length > 0 ? ranked[0]._score : null;
     const targetScore = ranked.find(i => i.id === t.expect_contains)?._score || null;
 
     results.push({
       query: t.query, expected: t.expect_contains, desc: t.desc,
-      found, position, top_3: topIds.slice(0, 3),
+      found: hasExpectation ? found : null, position, top_3: topIds.slice(0, 3),
       target_score: targetScore ? targetScore.composite.toFixed(3) : 'N/A',
-      pass: found && position <= 10 ? 'OK' : 'FAIL'
+      pass: hasExpectation ? (found && position <= 10 ? 'OK' : 'FAIL') : 'NO_EXPECTATION'
     });
   }
 
+  const asserted = results.filter(r => r.pass !== 'NO_EXPECTATION');
   const passed = results.filter(r => r.pass === 'OK').length;
   return {
-    tests: tests.length, passed, failed: tests.length - passed,
+    tests: results.length, asserted: asserted.length, passed,
+    failed: asserted.length - passed,
+    note: asserted.length === 0
+      ? 'no expectations configured — ranking reported only. Add immune_test_ids.json (gitignored) to assert against your own memory.'
+      : undefined,
     engine: 'tfidf+trigrams', alpha: RERANK_ALPHA,
     threshold: RERANK_THRESHOLD, min_score: RERANK_MIN_SCORE,
     results
