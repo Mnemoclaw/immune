@@ -1,6 +1,6 @@
 ---
 name: immune
-version: "5.3.0"
+version: "5.3.1"
 description: "Hybrid adaptive system v5.3.0: Vector engine (local MiniLM by default, optional GPU daemon auto-detected on EMBED_PORT + cross-encoder re-ranking) + FTS4 via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services or GPU required. Shared with Chimera."
 ---
 
