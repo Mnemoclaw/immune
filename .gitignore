@@ -39,3 +39,15 @@ Thumbs.db
 *.swp
 *.swo
 *~
+
+# Local test/verification sandbox — contains COPIES of the production memory
+# files (immune_memory.json, cheatsheet_memory.json, immune.sqlite) and the
+# probe/benchmark scripts used against the live daemon. Never publish.
+.test-immune/
+*.sqlite.bak-*
+
+# Généré par tools/viz/immune-viz.js : embarque TOUTE la base immune
+# (const DATA = {...}) y compris des identifiants de groupe WhatsApp.
+# Ne doit JAMAIS etre versionne sur le depot public — il se regenere localement :
+#   node tools/viz/immune-viz.js
+tools/viz/immune-viz.html

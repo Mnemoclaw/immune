@@ -28,8 +28,23 @@ const LIMITS = { max_antibodies: 500, max_strategies: 300, max_sqlite_mb: 50, ma
 const DEDUP_THRESHOLD_JACCARD = 0.55;
 const DEDUP_THRESHOLD_EMBEDDING = 0.7;    // local MiniLM (384 dims): non-dup <0.56, dup >0.74
 // The optional daemon serves a DIFFERENT bi-encoder (Nemotron, 2048 dims) with its own
-// cosine scale — threshold tuned in production (2026-07-17: true dup 0.802, near-miss 0.789).
-const DEDUP_THRESHOLD_EMBEDDING_DAEMON = 0.80;
+// cosine scale. Re-measured 2026-10-08 on the daemon once its asymmetric prompts were
+// applied (document-vs-document, 10 true duplicate paraphrases / 1 near-miss / 4
+// unrelated): true dups 0.778-0.962, near-miss 0.657, unrelated 0.332-0.436.
+// 0.75 keeps a margin on both sides (worst true dup +0.028, near-miss -0.093).
+// The previous 0.80 came from the un-prompted encoder, where true dups peaked at
+// 0.768 — i.e. daemon dedup could never fire at all.
+const DEDUP_THRESHOLD_EMBEDDING_DAEMON = 0.75;
+
+// Dedup refinement (daemon only). The bi-encoder cosine on its own cannot
+// separate "same rule, other words" from "different rule, similar words":
+// measured 2026-10-08 on 8 true duplicate paraphrases + 7 near-misses, true
+// dups span 0.54-0.94 and near-misses 0.58-0.89 — the clusters overlap. The
+// cross-encoder separates them (dups 0.46-0.99, near-misses 0.00-0.02, only
+// one cross-lingual French pair missed). So: cosine proposes, CE disposes.
+const DEDUP_CE_THRESHOLD = 0.45;      // CE score above which it is the same rule
+const DEDUP_CE_CANDIDATES = 8;        // top cosine candidates sent to the CE
+const DEDUP_COSINE_PREFILTER = 0.40;  // below this, not even worth a CE call
 
 function dedupThresholdForEngine(engine) {
   return engine === 'daemon' ? DEDUP_THRESHOLD_EMBEDDING_DAEMON : DEDUP_THRESHOLD_EMBEDDING;
@@ -48,6 +63,15 @@ const EMBEDDING_MODEL = 'Xenova/all-MiniLM-L6-v2';
 const EMBED_DAEMON_PORT = parseInt(process.env.EMBED_PORT || '8091', 10);
 const CROSS_ENCODER_TOP = 20;       // top candidates sent to the cross-encoder
 const CROSS_ENCODER_ALPHA = 0.7;    // weight: cross-encoder score vs bi-encoder score
+
+// Nemotron-3-Embed (the daemon's bi-encoder) is ASYMMETRIC: its
+// config_sentence_transformers.json declares prompts {query: 'query: ',
+// document: 'passage: '}. A query and a document encoded without those
+// prefixes land in the same space and the semantic signal disappears
+// (measured: related pair 0.694 vs unrelated 0.562 — no separation; with
+// prefixes: 0.72 vs 0.12). The daemon takes a `role` field; older daemons
+// ignore it, so we prefix the text ourselves in that case.
+const BI_PROMPTS = { query: 'query: ', document: 'passage: ' };
 
 const STOPWORDS = new Set(['the', 'a', 'an', 'is', 'are', 'was', 'were', 'be',
   'been', 'being', 'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would',
@@ -168,16 +192,23 @@ async function checkDaemon(force) {
       ok: !!r.ok,
       biEncoder: !!(r.models && r.models.biEncoder),
       crossEncoder: !!(r.models && r.models.crossEncoder),
+      asymmetric: !!r.asymmetric,
       ts: Date.now(),
     };
   } catch {
-    _daemonState = { ok: false, biEncoder: false, crossEncoder: false, ts: Date.now() };
+    _daemonState = { ok: false, biEncoder: false, crossEncoder: false, asymmetric: false, ts: Date.now() };
   }
   return _daemonState;
 }
 
-async function daemonEmbedBatch(texts) {
-  const r = await daemonHttp('POST', '/embed-batch', { texts }, 30000);
+async function daemonEmbedBatch(texts, role) {
+  // `role` puts the text on the right side of the daemon's asymmetric space.
+  // If the daemon predates the role field, prefix here instead — the model
+  // then sees the literal prefix, which is equivalent.
+  const payload = _daemonState && _daemonState.asymmetric
+    ? { texts, role }
+    : { texts: texts.map(t => (BI_PROMPTS[role] || '') + t) };
+  const r = await daemonHttp('POST', '/embed-batch', payload, 30000);
   if (!r || !Array.isArray(r.vectors) || r.vectors.length !== texts.length || r.vectors.some(v => !Array.isArray(v))) {
     throw new Error('daemon: embed-batch response mismatch');
   }
@@ -1466,14 +1497,18 @@ async function resolveEmbedEngine() {
   return _embedEngine;
 }
 
-async function embedText(text) {
+// role: 'query' for a user query (retrieval), 'document' for a stored item
+// pattern. Nemotron-3-Embed is asymmetric, so mixing roles would compare
+// vectors from two different spaces (dedup in particular must compare
+// pattern-to-pattern, i.e. document-to-document).
+async function embedText(text, role) {
   const engine = await resolveEmbedEngine();
   if (engine === 'daemon') {
     try {
       // No cold-wake timeout: a slow daemon is still Nemotron (the chosen
       // quality) — waiting is better than downgrading. The daemon keep-alive
       // (embed_server.py) keeps the CUDA context warm in practice.
-      const vecs = await daemonEmbedBatch([text]);
+      const vecs = await daemonEmbedBatch([text], role || 'query');
       return vecs[0];
     } catch (e) {
       warnDaemonDead('embed', e.message);
@@ -1491,7 +1526,7 @@ async function embedBatch(texts) {
   const engine = await resolveEmbedEngine();
   if (engine === 'daemon') {
     try {
-      return await daemonEmbedBatch(texts);
+      return await daemonEmbedBatch(texts, 'document');
     } catch (e) {
       warnDaemonDead('embed-batch', e.message);
       return null;
@@ -1528,7 +1563,7 @@ function modelTagForEngine() {
   // Rows are tagged by engine: a vector computed by one engine (local MiniLM
   // 384-dim vs daemon Nemotron 2048-dim) must never be compared against a
   // query embedded by the other.
-  return _embedEngine === 'daemon' ? 'daemon' : 'local';
+  return _embedEngine === 'daemon' ? 'daemon-v2' : 'local';
 }
 
 function readCachedEmbedding(db, id, type, pattern) {
@@ -1555,7 +1590,7 @@ function storeCachedEmbedding(db, id, type, pattern, vec) {
 async function getCachedEmbedding(db, id, type, pattern) {
   const cached = readCachedEmbedding(db, id, type, pattern);
   if (cached) return cached;
-  const vec = await embedText(pattern);
+  const vec = await embedText(pattern, 'document');
   storeCachedEmbedding(db, id, type, pattern, vec);
   return vec || null;
 }
@@ -1587,23 +1622,58 @@ async function findBestDuplicateEmbeddings(pattern, domains, items, type) {
   // (the sqlite vector cache is tagged per engine — daemon Nemotron and
   //  local MiniLM vectors are never compared across engines)
   const db = await getDB();
-  const newVec = await embedText(pattern);
+  const newVec = await embedText(pattern, 'document');
   if (!newVec) return { vectorsFailed: true };
 
-  let bestScore = 0;
-  let bestItem = null;
+  // Cosine pass: propose the closest items (cached vectors, no network).
+  const engine = await resolveEmbedEngine();
+  const threshold = dedupThresholdForEngine(engine);
+  const scored = [];
   for (const item of items) {
     const cachedVec = await getCachedEmbedding(db, item.id, type, item.pattern);
     if (!cachedVec) continue;
-    const score = cosineSimilarity(newVec, cachedVec);
-    if (score > bestScore) {
-      bestScore = score;
-      bestItem = item;
+    scored.push({ item, cos: cosineSimilarity(newVec, cachedVec) });
+  }
+  if (scored.length === 0) return null;
+  scored.sort((a, b) => b.cos - a.cos);
+
+  // Cross-encoder pass (daemon only): decide whether the best candidates state
+  // the same rule. Without it we fall back to the plain cosine threshold.
+  if (engine === 'daemon') {
+    const cands = scored.filter(c => c.cos >= DEDUP_COSINE_PREFILTER).slice(0, DEDUP_CE_CANDIDATES);
+    if (cands.length > 0) {
+      try {
+        const d = await checkDaemon();
+        if (d.crossEncoder) {
+          const ceResults = await daemonRerankImmune(pattern, cands.map(c => c.item), cands.length);
+          let best = null;
+          for (const r of ceResults) {
+            const cand = cands[r.index];
+            if (!cand || r.score < DEDUP_CE_THRESHOLD) continue;
+            if (!best || r.score > best.ce) best = { cand, ce: r.score };
+          }
+          if (best) {
+            return {
+              id: best.cand.item.id,
+              score: Math.round(best.cand.cos * 1000) / 1000,
+              ceScore: Math.round(best.ce * 10000) / 10000,
+              pattern: best.cand.item.pattern,
+              engine: 'embedding+cross-encoder',
+              threshold,
+              ceThreshold: DEDUP_CE_THRESHOLD,
+            };
+          }
+          return null; // CE looked at the plausible candidates and rejected them
+        }
+      } catch (e) {
+        process.stderr.write(`[IMMUNE] Dedup cross-encoder unavailable (${e.message}), cosine threshold only.\n`);
+      }
     }
   }
-  const threshold = dedupThresholdForEngine(await resolveEmbedEngine());
-  if (bestScore >= threshold) {
-    return { id: bestItem.id, score: Math.round(bestScore * 1000) / 1000, pattern: bestItem.pattern, engine: 'embedding', threshold };
+
+  const best = scored[0];
+  if (best.cos >= threshold) {
+    return { id: best.item.id, score: Math.round(best.cos * 1000) / 1000, pattern: best.item.pattern, engine: 'embedding', threshold };
   }
   return null;
 }
@@ -1893,8 +1963,8 @@ async function cmdSimilarityTest() {
   const embedder = await getEmbedder();
   if (embedder) {
     for (const t of tests) {
-      const vecA = await embedText(t.a);
-      const vecB = await embedText(t.b);
+      const vecA = await embedText(t.a, 'document');
+      const vecB = await embedText(t.b, 'document');
       const score = cosineSimilarity(vecA, vecB);
       const isDup = score >= eThreshold;
       const pass = (t.expect === 'dup' && isDup) || (t.expect === 'not-dup' && !isDup);

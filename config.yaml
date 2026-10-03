@@ -86,11 +86,20 @@ adapter:
 # ============================================================
 # If a compatible daemon is reachable, the adapter uses it as primary vector
 # source (batched bi-encoder, pre-loaded model) and adds a cross-encoder
-# re-ranking stage to search. No daemon → local MiniLM, silently (identical
-# bi-encoder model, so vectors and dedup thresholds stay compatible).
+# re-ranking stage to search. No daemon → local MiniLM (a standalone engine in
+# its own right, not a quality downgrade: once a process has used the daemon it
+# waits for a slow daemon and, on failure, disables the vector stage rather than
+# silently recomputing with the weaker local model).
 #
-# Compatible daemon: MnemoClaw embed-daemon.js (see the MnemoClaw stack —
-# protocol: GET /health, POST /embed-batch, POST /rerank-immune).
+# Asymmetric prompts: Nemotron-3-Embed declares 'query: ' / 'passage: ' prompts.
+# The adapter sends role:'query' for user queries and role:'document' for stored
+# patterns; against a daemon that predates the field it prefixes the text itself.
+# Measured without those prefixes: a related pair scored 0.694 and an unrelated
+# one 0.562 — i.e. no separation at all.
+#
+# Compatible daemon: MnemoClaw embed-daemon (embed_server.py) — protocol:
+# GET /health (exposes prompts/asymmetric), POST /embed-batch (role),
+# POST /rerank-immune.
 # Env overrides: EMBED_PORT (port), IMMUNE_EMBED_DAEMON=off|on (enabled).
 # Probe caching: a healthy daemon is trusted for 30s, a failed probe is
 # remembered for 60s (a daemon that comes up later is picked up automatically).
@@ -104,6 +113,24 @@ indexing:
   chunk_overlap_tokens: 80
   engine: "fts4"
   tokenizer: "porter"
+
+# Duplicate detection (engine-aware — the two engines do not share a scale)
+dedup:
+  # local MiniLM (384 dims)
+  threshold_embedding_local: 0.70
+  # daemon Nemotron (2048 dims), document-vs-document, re-measured 2026-10-08
+  # once the daemon applied its asymmetric prompts: true duplicate paraphrases
+  # 0.778-0.962, near-miss 0.657, unrelated 0.332-0.436.
+  # (Before that fix true dups peaked at 0.768, so the old 0.80 threshold could
+  # never fire: daemon dedup was silently dead.)
+  threshold_embedding_daemon: 0.75
+  threshold_jaccard: 0.55
+  # Cosine alone overlaps the two clusters (dups 0.54-0.94 vs near-misses
+  # 0.58-0.89), so on the daemon the cosine only proposes the 8 closest
+  # candidates and the cross-encoder decides (CE >= 0.45 → same rule).
+  cross_encoder_threshold: 0.45
+  cross_encoder_candidates: 8
+  cosine_prefilter: 0.40
 
 locking:
   enabled: true
