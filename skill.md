@@ -1,8 +1,18 @@
 ---
 name: immune
 version: "5.3.1"
-description: "Hybrid adaptive system v5.3.0: Vector engine (local MiniLM by default, optional GPU daemon auto-detected on EMBED_PORT + cross-encoder re-ranking) + FTS4 via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services or GPU required. Shared with Chimera."
+description: "Hybrid adaptive system v5.3.1: Vector engine (local MiniLM by default, optional GPU daemon auto-detected on EMBED_PORT + cross-encoder re-ranking) + FTS4 via RRF. Cheatsheet (positive) + Immune (negative) + ContextMemory + Score + Flush. Standalone CLI, no external services or GPU required. Shared with Chimera."
 ---
+
+# Upgrade
+
+```bash
+npm update -g @mnemoclaw/immune && immune
+```
+
+Both steps: `npm update` refreshes the package, `immune init` refreshes the copy of the adapter this skill executes. `npm update` alone has no runtime effect.
+
+`immune version` shows the package version AND the version actually installed in the skill dir, so drift is visible. The adapter reports its own version via `node immune-adapter.js version` and the `version` field of `stats`.
 
 # Immune System v4 — Hybrid Cheatsheet + Immune
 

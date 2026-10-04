@@ -10,6 +10,7 @@ const { spawnSync } = require("child_process");
 
 const PKG = require("../package.json");
 const VERSION = PKG.version;
+const PKG_NAME = PKG.name;
 const MIN_NODE_MAJOR = 18;
 
 // Files/dirs shipped by the npm package that must be copied into the skill dir.
@@ -123,15 +124,40 @@ function npmBin() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
+// Node >= 22 refuses to spawn a .cmd/.bat directly (spawnSync returns EINVAL),
+// so on Windows npm must go through a shell. Arguments here are ours (package
+// name, fixed flags) and are quoted individually before being concatenated.
+function quoteWinArg(s) {
+  const v = String(s);
+  return /[\s"^&|<>]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+}
+
+function runNpm(args, opts = {}) {
+  const isWin = process.platform === "win32";
+  const res = spawnSync(
+    isWin ? [npmBin(), ...args].map(quoteWinArg).join(" ") : npmBin(),
+    isWin ? [] : args,
+    {
+      cwd: opts.cwd,
+      stdio: opts.stdio || "inherit",
+      encoding: opts.encoding,
+      timeout: opts.timeout,
+      windowsHide: true,
+      ...(isWin ? { shell: true } : {}),
+    }
+  );
+  return res;
+}
+
 function runNpmInstall(cwd) {
   log("[immune] Installing dependencies (this may take a minute on first run)…");
-  const result = spawnSync(
-    npmBin(),
-    ["install", "--omit=dev", "--no-fund", "--no-audit"],
-    { cwd, stdio: "inherit" }
-  );
+  const result = runNpm(["install", "--omit=dev", "--no-fund", "--no-audit"], { cwd });
   if (result.status !== 0) {
-    err(`[immune] npm install failed (exit ${result.status}).`);
+    err(
+      `[immune] npm install failed (exit ${result.status}${
+        result.error ? `, ${result.error.code}` : ""
+      }).`
+    );
     return false;
   }
   return true;
@@ -194,9 +220,15 @@ function cmdInit() {
   }
 
   // Verify
+  // Refresh the update cache BEFORE verifying: a verification failure exits the
+  // process, and an update notice is exactly what the user needs at that point.
+  refreshUpdateCache();
+  notifyUpdate();
   log("[immune] Verifying…");
   if (!verifyAdapter(dst)) {
     err("[immune] Verification failed — see errors above.");
+    err("[immune] If the skill dir was edited by hand, re-run with IMMUNE_FORCE_NPM=1");
+    err("[immune] (forces a clean reinstall of the dependencies).");
     err(`[immune] Skill dir: ${dst}`);
     process.exit(1);
   }
@@ -227,7 +259,93 @@ function cmdStats() {
 }
 
 function cmdVersion() {
-  log(`@mnemoclaw/immune v${VERSION}`);
+  log(`@mnemoclaw/immune v${VERSION} (paquet npm)`);
+
+  // The runtime the agent actually executes is the COPY in the skill dir, so a
+  // new npm version changes nothing until `immune init` refreshes it. Showing
+  // both versions makes that version skew visible instead of mysterious.
+  const dst = skillDir();
+  const installed = installedVersion(dst);
+  if (installed && installed !== VERSION) {
+    log(`Skill dir: ${dst} -> v${installed} (different du paquet)`);
+    log(`  pour appliquer la v${VERSION} : immune init`);
+  } else if (installed) {
+    log(`Skill dir: ${dst} -> v${installed} (a jour)`);
+  } else {
+    log(`Skill dir: ${dst} -> pas encore installe (lancez \`immune init\`)`);
+  }
+  notifyUpdate();
+}
+
+// ── Mise a jour : verification npm une fois par jour, sans bloquant ──
+// Aucun appel reseau dans le chemin critique : le cache est lu au demarrage et
+// rafraichi une fois par 24 h, en fin de `immune init`. Hors ligne, echec
+// silencieux ; aucune donnee n'est envoyee ailleurs que le registre npm.
+
+const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const UPDATE_CHECK_TIMEOUT_MS = 5000;
+
+function updateCachePath() {
+  return path.join(skillDir(), ".update-check.json");
+}
+
+function readUpdateCache() {
+  try {
+    return JSON.parse(fs.readFileSync(updateCachePath(), "utf8"));
+  } catch {
+    return null;
+  }
+}
+
+// Compare "5.3.10" et "v5.3.9" -> 1 / -1 / 0
+function cmpSemver(a, b) {
+  const pa = String(a).replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  const pb = String(b).replace(/^v/, "").split(".").map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < 3; i++) {
+    const x = pa[i] || 0;
+    const y = pb[i] || 0;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return 0;
+}
+
+function refreshUpdateCache() {
+  const cache = readUpdateCache();
+  if (cache && typeof cache.checkedAt === "number") {
+    if (Date.now() - cache.checkedAt < UPDATE_CHECK_INTERVAL_MS) return cache;
+  }
+  try {
+    const res = runNpm(["view", PKG_NAME, "version"], {
+      encoding: "utf8",
+      timeout: UPDATE_CHECK_TIMEOUT_MS,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    const latest = (res.stdout || "").trim();
+    if (res.status === 0 && /^v?\d+\.\d+\.\d+/.test(latest)) {
+      const next = { checkedAt: Date.now(), latest };
+      try {
+        fs.writeFileSync(updateCachePath(), JSON.stringify(next));
+      } catch {
+        /* skill dir non inscriptible : on garde le cache en memoire */
+      }
+      return next;
+    }
+  } catch {
+    /* pas de reseau : on ignore */
+  }
+  return cache;
+}
+
+function notifyUpdate() {
+  const cache = readUpdateCache();
+  if (!cache || !cache.latest) return;
+  if (cmpSemver(cache.latest, VERSION) > 0) {
+    log("");
+    log(`[immune] v${cache.latest} est disponible (vous utilisez v${VERSION}).`);
+    log(`  npm update -g ${PKG_NAME} && immune`);
+    log("  Les deux etapes sont necessaires : le code utilise par l'agent est une");
+    log("  copie dans le skill dir, rafraichie par \`immune init\`.");
+  }
 }
 
 function cmdHelp() {
@@ -240,6 +358,11 @@ function cmdHelp() {
   log("  immune help        Show this message");
   log("");
   log("Default action when no argument is given: init.");
+  log("");
+  log("Mise a jour :");
+  log(`  npm update -g ${PKG_NAME} && immune`);
+  log("  (l'etape \`immune\` est obligatoire : l'agent execute une copie des");
+  log("  fichiers dans ~/.claude/skills/immune/, rafraichie par init.)");
   log("");
   log("Environment:");
   log("  IMMUNE_FORCE_NPM=1   Force npm install even if version unchanged.");

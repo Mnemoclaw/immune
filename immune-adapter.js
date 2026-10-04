@@ -1057,12 +1057,28 @@ async function cmdIndex(args) {
            strategies: csData.strategies.length };
 }
 
+// Version reported by the adapter itself. The agent runs the COPY of this file
+// in the skill dir, so this can legitimately lag behind the npm package until
+// `immune init` refreshes it — that skew is worth being able to see.
+let _adapterVersion = null;
+function adapterVersion() {
+  if (_adapterVersion === null) {
+    try {
+      _adapterVersion = require('./package.json').version || 'unknown';
+    } catch {
+      _adapterVersion = 'unknown';
+    }
+  }
+  return _adapterVersion;
+}
+
 async function cmdStats() {
   const abData = loadAntibodies();
   const csData = loadStrategies();
   const migration = getMigrationState();
   const d = await checkDaemon();
   return {
+    version: adapterVersion(),
     antibodies: { total: abData.antibodies.length, ...abData.stats },
     strategies: { total: csData.strategies.length, ...csData.stats },
     embedding: {
@@ -2097,6 +2113,12 @@ function parseArgs(argv) {
 }
 
 const COMMANDS = {
+  version: async () => ({
+    version: adapterVersion(),
+    node: process.version,
+    platform: `${process.platform} ${process.arch}`,
+    embed_engine: await resolveEmbedEngine(),
+  }),
   'get-antibodies': cmdGetAntibodies,
   'get-strategies': cmdGetStrategies,
   'add-antibody': cmdAddAntibody,

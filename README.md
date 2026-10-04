@@ -99,7 +99,25 @@ npm install -g @mnemoclaw/immune
 immune init
 ```
 
-That's it — `immune init` copies the skill into `~/.claude/skills/immune/`, installs dependencies, and verifies the install. Re-run `immune init` after every `npm update` to upgrade in place (your memory is preserved).
+That's it — `immune init` copies the skill into `~/.claude/skills/immune/`, installs dependencies, and verifies the install.
+
+### Upgrading
+
+```bash
+npm update -g @mnemoclaw/immune && immune
+```
+
+**Both steps are required.** `npm update` refreshes the npm package, but the code your agent actually runs is a *copy* of the adapter inside `~/.claude/skills/immune/` — only `immune init` refreshes that copy. Running `npm update` alone changes nothing at runtime, which is the classic "I updated and nothing happened".
+
+The CLI checks npm once a day (cached in `~/.claude/skills/immune/.update-check.json`, no telemetry, silent when offline) and prints a single-line notice when a newer version exists. `immune version` shows both versions so any drift is visible:
+
+```
+@mnemoclaw/immune v5.3.1 (npm package)
+Skill dir: ~/.claude/skills/immune -> v5.2.1 (different from the package)
+  to apply v5.3.1: immune init
+```
+
+`node immune-adapter.js version` (or the `version` field of `stats`) reports the version of the code actually executing.
 
 > No npm? Use [Manual install](#manual-install-alternative) below.
 
