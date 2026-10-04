@@ -19,7 +19,8 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "22"
+          # node 24 ships npm 11.x — required for Trusted Publishing (OIDC, npm >= 11.5.1)
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Verify tag matches package version (tag triggers only)
@@ -40,6 +41,8 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # Authentication via Trusted Publishing (OIDC): npm exchanges the GitHub
+        # Actions token for a short-lived publish token, so no long-lived
+        # NPM_TOKEN secret is needed. Configured on npmjs.com in the package
+        # settings: Provider GitHub, org Mnemoclaw, repo immune, workflow publish.yml.
+        run: npm publish --access public --provenance
