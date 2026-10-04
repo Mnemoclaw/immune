@@ -1,4 +1,4 @@
-# Immune System v5.3.0 — Hybrid Adaptive Memory for AI Agents
+# Immune System v5.3.2 — Hybrid Adaptive Memory for AI Agents
 
 [![Stars](https://img.shields.io/github/stars/Mnemoclaw/immune?style=social)](https://github.com/Mnemoclaw/immune)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -112,9 +112,9 @@ npm update -g @mnemoclaw/immune && immune
 The CLI checks npm once a day (cached in `~/.claude/skills/immune/.update-check.json`, no telemetry, silent when offline) and prints a single-line notice when a newer version exists. `immune version` shows both versions so any drift is visible:
 
 ```
-@mnemoclaw/immune v5.3.1 (npm package)
+@mnemoclaw/immune v5.3.2 (npm package)
 Skill dir: ~/.claude/skills/immune -> v5.2.1 (different from the package)
-  to apply v5.3.1: immune init
+  to apply v5.3.2: immune init
 ```
 
 `node immune-adapter.js version` (or the `version` field of `stats`) reports the version of the code actually executing.
