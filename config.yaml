@@ -1,5 +1,5 @@
 # ============================================================
-# Immune System — Configuration v5.3.2
+# Immune System — Configuration v5.3.3
 # ============================================================
 # Hybrid adaptive system: Cheatsheet (positive) + Immune (negative)
 # Search: Vector engine (daemon fast path OR local embeddings, primary)
@@ -10,7 +10,7 @@
 # ============================================================
 
 immune:
-  version: "5.3.2"
+  version: "5.3.3"
   # Model used for immune scanning (cheap/fast model recommended).
   # "haiku" is a logical alias resolved by Claude Code via env vars:
   #   ANTHROPIC_DEFAULT_HAIKU_MODEL  — set to your provider's fast/cheap model

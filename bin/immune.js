@@ -34,7 +34,13 @@ const USER_PRESERVED = [
   "analysis.json",
   "USER.md",
 ];
+// Anything a user could have written lives under these names and must never be
+// treated as "no user data": the memory files themselves count. A user whose
+// memory only exists as JSON (sqlite not created yet) still has data, and being
+// told "no user data — overwriting cleanly" is both wrong and alarming.
 const USER_PRESERVED_GLOBS = [
+  "immune_memory.json",
+  "cheatsheet_memory.json",
   "immune.sqlite",
   "immune.sqlite-", // covers -shm, -wal suffixes
   "archived_",

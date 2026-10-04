@@ -1,7 +1,28 @@
-# Immune System v5.3.2 — Hybrid Adaptive Memory for AI Agents
+# Immune System v5.3.3 — Hybrid Adaptive Memory for AI Agents
 
 [![Stars](https://img.shields.io/github/stars/Mnemoclaw/immune?style=social)](https://github.com/Mnemoclaw/immune)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+> ### ⚠️ Windows + Node 22+ — upgrade to 5.3.2 or later before reinstalling
+>
+> In **5.3.1 and earlier**, `immune init` silently failed to install the
+> dependencies on Windows: `spawnSync` refuses to launch `.cmd` files since Node
+> 22, so the internal `npm install` died with `exit null` and the skill directory
+> was left without `sql.js` / `@xenova/transformers`. If you ever saw
+> "Installing dependencies…" followed by an unexplained failure, that was the
+> cause.
+>
+> ```bash
+> npm update -g @mnemoclaw/immune && immune
+> ```
+>
+> **Both steps are required** — the adapter your agent runs is a *copy* inside
+> `~/.claude/skills/immune/`, and only `immune init` refreshes that copy.
+> Your memory files are never touched.
+>
+> Verifying your install: `immune version` (shows both versions), then
+> `node ~/.claude/skills/immune/immune-adapter.js stats` — you should see
+> `"version": "5.3.3"` and a `"version"` field in the output.
 
 A self-improving memory system that makes AI outputs better over time through two complementary memories:
 
