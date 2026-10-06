@@ -1,6 +1,6 @@
 {
   "name": "@mnemoclaw/immune",
-  "version": "5.3.3",
+  "version": "5.3.4",
   "main": "immune-adapter.js",
   "bin": {
     "immune": "bin/immune.js"
@@ -33,7 +33,7 @@
   ],
   "author": "Jacques Chauvin",
   "license": "MIT",
-  "description": "Hybrid adaptive memory system for AI agents — antibodies (negative patterns) + cheatsheet (positive patterns), with hybrid search (vector engine: local embeddings by default, optional GPU daemon auto-detected + cross-encoder, and FTS4 fused via RRF).",
+  "description": "Hybrid adaptive memory system for AI agents \u2014 antibodies (negative patterns) + cheatsheet (positive patterns), with hybrid search (vector engine: local embeddings by default, optional GPU daemon auto-detected + cross-encoder, and FTS4 fused via RRF).",
   "homepage": "https://github.com/Mnemoclaw/immune",
   "repository": {
     "type": "git",
