@@ -91,11 +91,25 @@ function daysDiff(dateStr) {
 
 function readJSON(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); }
-  catch { return null; }
+  catch (e) {
+    // fix(2026-10): fichier ABSENT = cas normal (migration) -> null. Fichier PRESENT
+    // mais illisible (verrou Windows, ecriture concurrente) -> ne JAMAIS retourner
+    // null : les loadAntibodies()/loadStrategies() renverraient un store vide et le
+    // prochain save() ecraserait tous les anticorps/strategies. On met de cote et on
+    // abort bruyamment.
+    if (e && e.code === 'ENOENT') return null;
+    const bak = p + '.corrupt-' + Date.now();
+    try { fs.copyFileSync(p, bak); } catch {}
+    console.error('[immune-adapter] READ FAILED: ' + p + ' (' + e.message + ') - copie: ' + bak);
+    throw e;
+  }
 }
 
 function writeJSON(p, data) {
-  fs.writeFileSync(p, JSON.stringify(data, null, 2), 'utf8');
+  // fix(2026-10): ecriture atomique (tmp + rename) contre les fichiers partiels.
+  const tmp = p + '.tmp';
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+  fs.renameSync(tmp, p);
 }
 
 function ensureLockFile() {
